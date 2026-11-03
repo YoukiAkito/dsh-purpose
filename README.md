@@ -105,7 +105,9 @@ node --test test/
 
 ## 许可
 
-MIT
+GNU General Public License v2.0（GPL-2.0-only）。
+
+选这个不是为了限制你用，是为了让改动过它的人也得把改动放出来——不想它变成别人的收费产品。
 
 ## 已知限制
 

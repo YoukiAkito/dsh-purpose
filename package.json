@@ -37,7 +37,7 @@
     "自主决策",
     "目的机制"
   ],
-  "license": "MIT",
+  "license": "GPL-2.0-only",
   "engines": {
     "node": ">=22.5"
   },
