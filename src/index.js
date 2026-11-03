@@ -19,6 +19,8 @@ import { resolveConfig, isInQuietHours, localZoneOffsetMinutes, parseClock } fro
 import { PurposeStore } from './store.js';
 import { tick as runTick, nextGapMs } from './engine.js';
 import { registerPurposeTools } from './tools.js';
+import { IntentRuntime } from './intent-runtime.js';
+import { describeDrives } from './drives.js';
 import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
 import { readJson, writeJsonAtomic, toIso } from './util.js';
 
@@ -58,6 +60,9 @@ export async function apply(ctx) {
 
   mkdirSync(config.dataDir, { recursive: true });
   const store = new PurposeStore(config.dataDir).load(log);
+  const intent = new IntentRuntime(config.dataDir).load(log);
+  /** 下一次念头评估的时刻（毫秒）；null = 未安排。 */
+  let intentNextAt = null;
 
   // 目标会话：config.json 里的 target.sessionId 优先，否则用当前 root agent。
   const targetSessionId = typeof config.target?.sessionId === 'string' ? config.target.sessionId : '';
@@ -67,6 +72,7 @@ export async function apply(ctx) {
     const kinds = Object.entries(store.state.kinds)
       .map(([kind, stat]) => `${kind}:${(stat?.confidence ?? 0.5).toFixed(2)}`)
       .join(' ');
+    const iv = intent.view();
     return {
       enabled: config.enabled,
       nextAt: store.state.nextAt === '' ? '（未安排）' : store.state.nextAt,
@@ -78,7 +84,11 @@ export async function apply(ctx) {
       scoreThreshold: config.scoreThreshold,
       quietHours: `${config.quietHours.start}-${config.quietHours.end}`,
       coolingCount: store.coolingMap().size,
-      kinds: kinds === '' ? '（还没有历史）' : kinds
+      kinds: kinds === '' ? '（还没有历史）' : kinds,
+      intentTension: iv.tension,
+      intentDrives: describeDrives(iv.drives),
+      openIntentions: iv.openIntentions,
+      intentNextAt: intentNextAt === null ? '（未安排）' : toIso(intentNextAt)
     };
   };
 
@@ -253,7 +263,32 @@ export async function apply(ctx) {
     state: stateView,
     goals: (limit) => store.recentGoals(limit),
     reclaim,
-    patchConfig
+    patchConfig,
+    intentions: ({ status = 'open', kind = '', limit = 10 } = {}) => {
+      const now = Date.now();
+      const all = intent.ledger.all();
+      return all
+        .filter((r) => (status === 'all' ? true : r.status === status))
+        .filter((r) => (kind === '' ? true : r.kind === kind))
+        .map((r) => ({
+          id: r.id,
+          kind: r.kind,
+          status: r.status,
+          text: r.text,
+          drive: r.drive,
+          weight: r.weight,
+          value: Number(intent.ledger.valueOf(r, now).toFixed(3)),
+          createdAt: toIso(r.createdAt),
+          lastTouchedAt: toIso(r.lastTouchedAt),
+          attempts: r.attempts
+        }))
+        .slice(0, limit);
+    },
+    noteIntention: (input) => {
+      const result = intent.ledger.add(input);
+      log('info', `[念头] 记下：${input.text.slice(0, 40)}${result.merged ? '（合并）' : ''}`);
+      return result;
+    }
   };
   const registerOne = (agent) => {
     if (registered.has(agent)) return;
@@ -281,12 +316,57 @@ export async function apply(ctx) {
   log('info', `started: dataDir=${config.dataDir} target=${targetSessionId || '（未配置）'} gap=${config.minGapSeconds}~${config.maxGapSeconds}s quiet=${config.quietHours.start}-${config.quietHours.end}`);
   schedule(firstDelay);
 
+  // ── 念头机制：驱动 + 账本 + 打分。第一步只记日志，不投递、不开 worker。
+  let intentTimer = null;
+  let intentRunning = false;
+  const intentTick = () => {
+    if (stopped || intentRunning) return;
+    intentRunning = true;
+    try {
+      intent.evaluate({
+        config: {
+          minTension: config.intent.minTension,
+          intentThreshold: config.intent.threshold,
+          intentAutonomousThreshold: config.intent.autonomousThreshold
+        },
+        log,
+        wakeupsLastHour: store.wakeupsLastHour(Date.now()),
+        maxWakeupsPerHour: config.maxWakeupsPerHour
+      });
+    } catch (error) {
+      log('warn', `念头评估失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      intentRunning = false;
+      if (!stopped && config.intent.enabled) {
+        intentNextAt = Date.now() + config.intent.tickSeconds * 1000;
+        intentTimer = setTimeout(() => {
+          intentTimer = null;
+          intentTick();
+        }, config.intent.tickSeconds * 1000);
+        if (typeof intentTimer.unref === 'function') intentTimer.unref();
+      }
+    }
+  };
+  if (config.intent.enabled) {
+    intentNextAt = Date.now() + config.intent.tickSeconds * 1000;
+    intentTimer = setTimeout(() => {
+      intentTimer = null;
+      intentTick();
+    }, config.intent.tickSeconds * 1000);
+    if (typeof intentTimer.unref === 'function') intentTimer.unref();
+    log('info', `念头机制已启动：每 ${config.intent.tickSeconds}s 评估一次，execute=${config.intent.execute ? 'on' : 'off（只记日志）'}`);
+  }
+
   return async () => {
     stopped = true;
     stopCreated();
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;
+    }
+    if (intentTimer !== null) {
+      clearTimeout(intentTimer);
+      intentTimer = null;
     }
     store.persist();
     log('info', 'stopped.');
@@ -356,6 +436,7 @@ function serializable(config) {
     confidence: config.confidence,
     maxMaterials: config.maxMaterials,
     maxMaterialChars: config.maxMaterialChars,
+    intent: config.intent,
     target: { sessionId: config.target?.sessionId ?? '' }
   };
 }

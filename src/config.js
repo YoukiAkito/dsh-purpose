@@ -42,7 +42,21 @@ export const DEFAULT_CONFIG = {
   /** 单次评估最多把多少条素材拼进提示词，控制 token。 */
   maxMaterials: 24,
   /** 提示词里每条素材最长多少字符。 */
-  maxMaterialChars: 220
+  maxMaterialChars: 220,
+  /** 念头机制：驱动 + 账本 + 打分。第一步只记日志，不开 worker。 */
+  intent: {
+    enabled: true,
+    /** 每多少秒评估一次念头（独立于上面的投递节奏）。 */
+    tickSeconds: 1800,
+    /** 不安分程度低于此值就整轮不评估。 */
+    minTension: 0.3,
+    /** 候选分低于此值不做。 */
+    threshold: 0.45,
+    /** 高于此值且风险低才可直接动手。 */
+    autonomousThreshold: 0.62,
+    /** 是否真的开 worker 会话（false = 只写日志，第一步的默认）。 */
+    execute: false
+  }
 };
 
 const TIME_RE = /^(?<hour>[01]\d|2[0-3]):(?<minute>[0-5]\d)$/;
@@ -121,6 +135,7 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
   }
 
   const confidence = file.confidence && typeof file.confidence === 'object' ? file.confidence : {};
+  const intent = file.intent && typeof file.intent === 'object' ? file.intent : {};
 
   return {
     enabled: typeof file.enabled === 'boolean' ? file.enabled : env.DSH_PURPOSE_ENABLED !== '0',
@@ -151,6 +166,14 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
     },
     maxMaterials: intOf(file.maxMaterials, DEFAULT_CONFIG.maxMaterials, 1, 200),
     maxMaterialChars: intOf(file.maxMaterialChars, DEFAULT_CONFIG.maxMaterialChars, 20, 2000),
+    intent: {
+      enabled: typeof intent.enabled === 'boolean' ? intent.enabled : DEFAULT_CONFIG.intent.enabled,
+      tickSeconds: intOf(intent.tickSeconds ?? env.DSH_PURPOSE_INTENT_TICK, DEFAULT_CONFIG.intent.tickSeconds, 60, 86400),
+      minTension: floatOf(intent.minTension, DEFAULT_CONFIG.intent.minTension, 0, 1),
+      threshold: floatOf(intent.threshold, DEFAULT_CONFIG.intent.threshold, 0, 1),
+      autonomousThreshold: floatOf(intent.autonomousThreshold, DEFAULT_CONFIG.intent.autonomousThreshold, 0, 1),
+      execute: typeof intent.execute === 'boolean' ? intent.execute : DEFAULT_CONFIG.intent.execute
+    },
     // 目标会话：没配就什么都不投（宁可不动，也不要瞎猜一个会话塞进去）。
     target: {
       sessionId: typeof file.target?.sessionId === 'string'

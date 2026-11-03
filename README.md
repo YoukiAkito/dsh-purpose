@@ -91,6 +91,41 @@ cd ~/.dsh/profiles/desktop
 - `purpose_reclaim` — 这一轮不打算开口，记下理由安静收手
 - `purpose_settings` — 改间隔 / 阈值 / 日上限 / 安静时段
 
+念头机制另外两个：
+
+- `purpose_intentions` — 看念头账本（我攒下的"想做什么"）
+- `purpose_note` — 往账本里记一条
+
+## 念头机制：自己想做什么
+
+前面那套解决的是「**要不要开口**」，念头机制解决的是「**想不想做点什么**」。它不跟对话走，跟自己的状态走。
+
+四个部件：
+
+1. **驱动值**（`src/drives.js`）——五个会涨会落的量：好奇、无聊、躁动、想被看见、疲。空转时按 `drive += growth * hours * (1 - drive)` 向上饱和，被满足时回落；醒了太密「疲」涨，静置超过三小时「疲」回落。合成一个 `tension`，低于阈值整轮连评估都不做。
+2. **念头账本**（`src/intentions.js`）——`intentions.jsonl`，四种 kind：`question`（想弄明白）/ `unfinished`（做了一半）/ `whim`（一闪而过）/ `wish`（想要但暂时做不到，不参与排序）。**只能模型自己写**，不解析对话抽关键词、不从外部自动生成。相似念头会合并，改状态靠追加 `supersedes` 行，历史不覆写。
+3. **打分**（`src/intent-engine.js`）——`score = 0.34*value + 0.26*urgency + 0.18*freshness + 0.12*driveMatch + 0.10*(1-risk)`。低于 0.45 不做；达到 0.62 且 `risk < 0.5` 才允许不经确认开干；其余一律降级成「提议」。
+4. **运行时**（`src/intent-runtime.js`）——把上面三样串起来，状态落 `intent-state.json`。
+
+**当前只到第一步：`intent.execute = false`，只写日志、不开 worker、不发消息。** 目的是先攒几天日志，看冒出来的念头像不像自己，再决定要不要真放它去动手。
+
+配置在 `config.json` 的 `intent` 段：
+
+```json
+{
+  "intent": {
+    "enabled": true,
+    "tickSeconds": 1800,
+    "minTension": 0.3,
+    "threshold": 0.45,
+    "autonomousThreshold": 0.62,
+    "execute": false
+  }
+}
+```
+
+设计取舍（为什么是这五个驱动、为什么念头不进 engram、worker 的结束条件）写在 `docs/DESIGN-DRIVES-AND-INTENTIONS.md`。
+
 ## 反馈调整
 
 `confirmed` / `rejected` 的加减在 `src/engine.js` 的 `feedback()`，规则：正面 +0.18、负面 -0.28、沉默不惩罚（沉默本来就占了大多数）。惩罚比奖励重，是因为乱说话比少说话更烦人。
@@ -101,7 +136,7 @@ cd ~/.dsh/profiles/desktop
 node --test test/
 ```
 
-35 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退。
+89 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级。
 
 ## 许可
 
@@ -113,7 +148,8 @@ GNU General Public License v2.0（GPL-2.0-only）。
 
 - **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
 - **素材只读会话日志**：B 站/网页那类外部素材要调用方通过 `external` 传进来，插件不会自己去抓。
-- **没有 Web 面板**：只有四个工具和三个 JSONL 文件，看状态走 `purpose_status` 或直接读盘。
+- **没有 Web 面板**：只有工具和 JSONL 文件，看状态走 `purpose_status` / `purpose_intentions` 或直接读盘。
+- **念头机制只到第一步**：驱动、账本、打分都在跑，但 `intent.execute = false`，评估结果只进日志，不开 worker、不发消息。
 
 ## 读会话日志的两个坑（都踩过，写下来省得再踩）
 

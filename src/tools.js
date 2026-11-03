@@ -43,7 +43,11 @@ const STATUS_SCHEMA = {
     scoreThreshold: { type: 'number', required: true },
     quietHours: { type: 'string', required: true },
     coolingCount: { type: 'integer', required: true },
-    kinds: { type: 'string', required: true }
+    kinds: { type: 'string', required: true },
+    intentTension: { type: 'number', required: true },
+    intentDrives: { type: 'string', required: true },
+    openIntentions: { type: 'integer', required: true },
+    intentNextAt: { type: 'string', required: true }
   }
 };
 
@@ -138,8 +142,7 @@ export function registerPurposeTools(agentCtx, agent, service) {
 
   add(defineTool({
     name: 'purpose_settings',
-    description: '改目的机制的运行参数。只传要改的字段，其余保持不变。改完立刻生效并落盘。',
-    parameters: {
+    description: '改目的机制的运行参数。只传要改的字段，其余保持不变。改完立刻生效并落盘。',    parameters: {
       enabled: { type: 'boolean', description: '总开关。' },
       min_gap_minutes: { type: 'integer', description: '两次评估的最小间隔（分钟）。' },
       max_gap_minutes: { type: 'integer', description: '两次评估的最大间隔（分钟）。' },
@@ -185,6 +188,94 @@ export function registerPurposeTools(agentCtx, agent, service) {
       }
     },
     presentCall: () => ({ type: 'text', text: '改目的机制设置' })
+  }));
+
+  add(defineTool({
+    name: 'purpose_intentions',
+    description: '看念头账本：我自己攒下的"想做什么"。用它回顾这段时间在想什么、哪些一直没动。',
+    parameters: {
+      status: { type: 'string', description: '只看某个状态：open / doing / done / dropped。默认 open。' },
+      kind: { type: 'string', description: '只看某种：question / unfinished / whim / wish。' },
+      limit: { type: 'integer', description: '返回几条，默认 10，上限 50。' }
+    },
+    output: {
+      schema: {
+        oneOf: [{
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            count: { type: 'integer', required: true },
+            items: { type: 'string', required: true }
+          }
+        }, ERROR_SCHEMA]
+      },
+      render: renderValue
+    },
+    async execute(args, exec) {
+      if (exec.agent !== agent) return internalError();
+      const status = typeof args['status'] === 'string' && args['status'] !== '' ? args['status'] : 'open';
+      const kind = typeof args['kind'] === 'string' && args['kind'] !== '' ? args['kind'] : '';
+      const raw = Number(args['limit'] ?? 10);
+      const limit = Number.isFinite(raw) ? Math.min(50, Math.max(1, Math.trunc(raw))) : 10;
+      const items = service.intentions({ status, kind, limit });
+      return { count: items.length, items: JSON.stringify(items) };
+    },
+    presentCall: () => ({ type: 'text', text: '看念头账本' })
+  }));
+
+  add(defineTool({
+    name: 'purpose_note',
+    description: '往念头账本里记一条"我想做什么"。这是给我自己用的，不是给她汇报——想到什么就记，别为了凑数写。已经在账本上的相似念头会被合并，不会重复。',
+    parameters: {
+      text: { type: 'string', required: true, description: '一句话说清想做什么，别写成任务清单。' },
+      kind: {
+        type: 'string',
+        description: 'question=想弄明白的，unfinished=做了一半的，whim=一闪而过先记着，wish=想要但暂时做不到的。默认 whim。'
+      },
+      drive: { type: 'string', description: '这条念头是被哪种劲儿顶上来的：curiosity / boredom / restlessness / pride。可省略。' },
+      weight: { type: 'number', description: '重要性 0~1，默认 0.5。拿不准就省略。' },
+      note: { type: 'string', description: '补一句为什么记它，可省略。' }
+    },
+    output: {
+      schema: {
+        oneOf: [{
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', required: true, const: true },
+            id: { type: 'string', required: true },
+            merged: { type: 'boolean', required: true },
+            message: { type: 'string', required: true }
+          }
+        }, ERROR_SCHEMA]
+      },
+      render: renderValue
+    },
+    async execute(args, exec) {
+      if (exec.agent !== agent) return internalError();
+      const text = typeof args['text'] === 'string' ? args['text'].trim() : '';
+      if (text === '') {
+        return { code: 'invalid_args', message: 'text 不能为空，一句话说清想做什么。' };
+      }
+      try {
+        const result = service.noteIntention({
+          text,
+          kind: typeof args['kind'] === 'string' ? args['kind'] : 'whim',
+          drive: typeof args['drive'] === 'string' ? args['drive'] : '',
+          weight: Number.isFinite(args['weight']) ? args['weight'] : 0.5,
+          note: typeof args['note'] === 'string' ? args['note'] : ''
+        });
+        return {
+          ok: true,
+          id: result.row.id,
+          merged: result.merged,
+          message: result.merged ? '账本里已有相似的念头，合并了。' : '记下了。'
+        };
+      } catch (error) {
+        return { code: 'invalid_args', message: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    presentCall: () => ({ type: 'text', text: '记一条念头' })
   }));
 
   return () => {
