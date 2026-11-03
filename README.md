@@ -106,3 +106,9 @@ node --test test/
 ## 许可
 
 MIT
+
+## 已知限制
+
+- **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
+- **素材只读会话日志**：B 站/网页那类外部素材要调用方通过 `external` 传进来，插件不会自己去抓。
+- **没有 Web 面板**：只有四个工具和三个 JSONL 文件，看状态走 `purpose_status` 或直接读盘。
