@@ -19,6 +19,7 @@ import { resolveConfig, isInQuietHours, localZoneOffsetMinutes, parseClock } fro
 import { PurposeStore } from './store.js';
 import { tick as runTick, nextGapMs } from './engine.js';
 import { registerPurposeTools } from './tools.js';
+import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
 import { readJson, writeJsonAtomic, toIso } from './util.js';
 
 export const name = 'dsh-purpose';
@@ -229,7 +230,7 @@ export async function apply(ctx) {
         config,
         deliver,
         log,
-        sessionLogPath: sessionLogPathOf(ctx, targetSessionId),
+        sessionLogPath: sessionLogPathOf(ctx, targetSessionId, join(config.dataDir, 'logcache'), log),
         thoughtsPath: join(config.dataDir, 'thoughts.jsonl')
       }), TICK_TIMEOUT_MS);
       if (result?.nextAt !== undefined) store.state.nextAt = result.nextAt;
@@ -310,20 +311,25 @@ function withTimeout(promise, ms) {
   });
 }
 
-/** 目标会话的日志路径（能取到就取，取不到返回空串，采集器会跳过）。 */
-function sessionLogPathOf(ctx, sessionId) {
+/**
+ * 目标会话的日志路径，**返回能直接读的明文 jsonl**（能取到就取，取不到返回空串）。
+ *
+ * persistence.pathOf 给的是 `.jsonl.zstd`，本机 node 24 有 zstdDecompressSync，
+ * 解压到 <dataDir>/logcache/<sessionId>.jsonl 后复用 60 秒。
+ */
+function sessionLogPathOf(ctx, sessionId, cacheDir, log = () => undefined) {
   if (sessionId === '') return '';
+  const home = process.env.DSH_HOME ?? `${process.env.HOME ?? '.'}/.dsh`;
   const persistence = ctx.get('sessionPersistence', false);
   if (persistence !== undefined && typeof persistence.pathOf === 'function') {
     try {
       const path = persistence.pathOf(sessionId);
-      if (typeof path === 'string' && path !== '') return path;
+      if (typeof path === 'string' && path !== '') return materializeSessionLog(path, cacheDir, { log });
     } catch {
-      // 忽略：退回下面的猜测路径。
+      // 忽略：退回下面的兜底路径。
     }
   }
-  const home = process.env.DSH_HOME ?? `${process.env.HOME ?? '.'}/.dsh`;
-  return join(home, 'sessions', sessionId, 'session.v4.jsonl');
+  return resolveSessionLog(home, sessionId, cacheDir, { log });
 }
 
 function todayKey() {

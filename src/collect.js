@@ -16,18 +16,26 @@ import { MATERIAL_KIND } from './score.js';
 /**
  * 从会话日志里取最近的消息。
  *
- * 兼容两种形状：
+ * 兼容三种形状：
  *   - {kind:'user'|'assistant', text|content, at|time|ts}
  *   - {type:'user/message'|'assistant/message', message:{content:[{type:'text',text}]}, at}
+ *   - DSH 真实日志：{type:'user/message', time, data:{content:[…], source:{kind}, role}}
+ *
+ * **DSH 日志里大部分 user/message 是系统塞进来的**（runtime-context 快照、
+ * 插件唤醒、工具任务回灌），真正人说的话 source.kind === 'user'。
+ * 采集时必须按 source.kind 过滤，否则素材池会被几百条英文运行时快照淹掉。
+ *
  * 拿不到就返回空数组——宁可少素材，也不要抛。
  */
 export function readSessionLog(path, options = {}) {
-  const { limit = 60, windowHours = 24 } = options;
+  const { limit = 60, windowHours = 24, maxScanLines = 20_000 } = options;
   if (typeof path !== 'string' || path === '' || !existsSync(path)) return [];
   const floor = Date.now() - windowHours * 3600_000;
   let rows;
   try {
-    rows = readJsonl(path, limit * 4);
+    // 别只读尾部几百行：日志里 tool/call、tool/result、runtime-context 占绝大多数，
+    // 真人消息很稀疏（实测 3000 行里只有 76 条），截太短就一条都捞不到。
+    rows = readJsonl(path, maxScanLines);
   } catch {
     return [];
   }
@@ -52,16 +60,24 @@ function parseLogRow(row) {
     return { role: row.kind, text, at: timeOf(row) };
   }
 
-  // 形状二：{type:'user/message', message:{content:[...]}}
-  if (typeof row.type === 'string') {
-    const role = row.type.startsWith('user/') ? 'user' : row.type.startsWith('assistant/') ? 'assistant' : '';
-    if (role === '') return null;
-    const text = textOf(row.message?.content ?? row.content ?? row.text);
-    if (text === '') return null;
-    return { role, text, at: timeOf(row) };
+  if (typeof row.type !== 'string') return null;
+  const role = row.type.startsWith('user/') ? 'user' : row.type.startsWith('assistant/') ? 'assistant' : '';
+  if (role === '') return null;
+
+  const data = asObject(row.data);
+  // 只收真人说的话：source.kind 不是 'user' 的全是系统注入。
+  if (role === 'user') {
+    const sourceKind = asObject(data?.source)?.kind;
+    if (typeof sourceKind === 'string' && sourceKind !== 'user') return null;
   }
 
-  return null;
+  const text = textOf(data?.content ?? row.message?.content ?? row.content ?? row.text);
+  if (text === '') return null;
+  return { role, text, at: timeOf(row) };
+}
+
+function asObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : undefined;
 }
 
 function textOf(value) {
@@ -97,16 +113,32 @@ export function materialsFromLog(rows, options = {}) {
   let index = 0;
   for (const row of rows) {
     if (row.role !== 'user' && includeAssistant !== true) continue;
+    const text = cleanText(row.text);
+    if (text === '') continue;
     index += 1;
     materials.push({
       id: `log:${row.at}:${index}`,
       kind: MATERIAL_KIND.USER_MESSAGE,
-      text: row.text.slice(0, maxChars),
+      text: text.slice(0, maxChars),
       at: row.at,
       source: 'session-log'
     });
   }
   return materials;
+}
+
+/** QQ 通道会在正文前面盖 `[消息号: xxx]` 和 `[2026-11-03 周二 15:41]`，素材里不需要。 */
+const META_PREFIX_RE = /^\s*(?:\[消息号:[^\]]*\]|\[20\d\d-\d\d-\d\d[^\]]*\])\s*\n?/;
+
+function cleanText(text) {
+  let out = String(text ?? '');
+  // 可能连着盖两行，循环剥。
+  for (let i = 0; i < 3; i += 1) {
+    const next = out.replace(META_PREFIX_RE, '');
+    if (next === out) break;
+    out = next;
+  }
+  return out.trim();
 }
 
 /** 我的待说想法（存在 state.json 里也行，这里是独立文件）。 */

@@ -114,3 +114,9 @@ GNU General Public License v2.0（GPL-2.0-only）。
 - **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
 - **素材只读会话日志**：B 站/网页那类外部素材要调用方通过 `external` 传进来，插件不会自己去抓。
 - **没有 Web 面板**：只有四个工具和三个 JSONL 文件，看状态走 `purpose_status` 或直接读盘。
+
+## 读会话日志的两个坑（都踩过，写下来省得再踩）
+
+1. **`.jsonl.zstd` 是多帧拼接的**。DSH 每次追加都压成一个独立 frame，而 node 的 `zstdDecompressSync` 只解第一个 frame——解出来只有文件头那行 `{"type":"session",...}`，看起来像"日志是空的"。必须用 `zstd -dc` 顺着解到底。插件里优先找 `/opt/homebrew/bin/zstd`（宿主进程 PATH 往往只有 `/usr/bin:/bin`），找不到才退回 node 内置解压。
+2. **大多数 `user/message` 不是人说的**。实测 3000 行日志里 216 条 `user/message`，其中 `source.kind === 'user'` 的只有 77 条，其余是 `runtime-context`（118）、`plugin:*`（20）、`tool-jobs`（1）。采集时不过滤 `source.kind`，素材池会被几百条英文运行时快照淹掉；而且真人消息稀疏（3000 行里 76 条），只读尾部几百行会一条都捞不到。
+
