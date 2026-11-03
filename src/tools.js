@@ -1,0 +1,213 @@
+/**
+ * 面向模型的工具。
+ *
+ *   purpose_status    看一眼目的机制现在什么状态（下次评估、今天发了几条、各类置信度）
+ *   purpose_goals     看最近提过哪些目标假设、分数多少、为什么没发
+ *   purpose_reclaim   这一轮不打算开口 —— 记下理由，安静收手
+ *   purpose_settings  改运行参数（间隔、阈值、日上限、安静时段）
+ *
+ * 这些工具注册在每个 root agent 的 scope 上，跟 dsh-proactive 一致。
+ */
+import { defineTool } from '@deepseek-ai/dsh-tools';
+import { DEFAULT_CONFIG } from './config.js';
+import { toIso } from './util.js';
+
+const ERROR_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    code: { type: 'string', required: true },
+    message: { type: 'string', required: true }
+  }
+};
+
+function renderValue(_args, value) {
+  return [{ type: 'text', text: JSON.stringify(value) }];
+}
+
+function internalError() {
+  return { code: 'internal', message: '这个工具只能在它所属的 agent 回合里调用。' };
+}
+
+const STATUS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    enabled: { type: 'boolean', required: true },
+    nextAt: { type: 'string', required: true },
+    deliveredToday: { type: 'integer', required: true },
+    maxDeliveriesPerDay: { type: 'integer', required: true },
+    wakeupsLastHour: { type: 'integer', required: true },
+    maxWakeupsPerHour: { type: 'integer', required: true },
+    gapSeconds: { type: 'string', required: true },
+    scoreThreshold: { type: 'number', required: true },
+    quietHours: { type: 'string', required: true },
+    coolingCount: { type: 'integer', required: true },
+    kinds: { type: 'string', required: true }
+  }
+};
+
+/**
+ * @param {object} agentCtx  agent 作用域上下文（有 tools.register）
+ * @param {object} agent     所属 agent
+ * @param {object} service   插件服务对象，需提供
+ *   - state()                        → 状态快照
+ *   - goals(limit)                   → 最近目标假设
+ *   - reclaim(reason)                → 记一次"这次不说"
+ *   - patchConfig(patch)             → 改配置，返回新的生效配置
+ */
+export function registerPurposeTools(agentCtx, agent, service) {
+  const disposers = [];
+
+  const add = (definition) => {
+    disposers.push(agentCtx.tools.register(definition));
+  };
+
+  add(defineTool({
+    name: 'purpose_status',
+    description: '看一眼目的机制现在的状态：下次评估时间、今天已经开口几次、冷却中的目标数、各类目标的置信度。不是每次都要看，想确认自己在不在正常节奏里时用。',
+    parameters: {},
+    output: {
+      schema: { oneOf: [STATUS_SCHEMA, ERROR_SCHEMA] },
+      render: renderValue
+    },
+    async execute(_args, exec) {
+      if (exec.agent !== agent) return internalError();
+      return service.state();
+    },
+    presentCall: () => ({ type: 'text', text: '看目的机制状态' })
+  }));
+
+  add(defineTool({
+    name: 'purpose_goals',
+    description: '看最近提出过哪些目标假设、各自多少分、最后有没有开口。用来回顾"为什么那几次没说话"。',
+    parameters: {
+      limit: { type: 'integer', description: '返回几条，默认 10，上限 50。' }
+    },
+    output: {
+      schema: {
+        oneOf: [{
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            goals: { type: 'string', required: true }
+          }
+        }, ERROR_SCHEMA]
+      },
+      render: renderValue
+    },
+    async execute(args, exec) {
+      if (exec.agent !== agent) return internalError();
+      const raw = Number(args['limit'] ?? 10);
+      const limit = Number.isFinite(raw) ? Math.min(50, Math.max(1, Math.trunc(raw))) : 10;
+      return { goals: JSON.stringify(service.goals(limit)) };
+    },
+    presentCall: () => ({ type: 'text', text: '看最近的目标假设' })
+  }));
+
+  add(defineTool({
+    name: 'purpose_reclaim',
+    description: '这一轮被叫起来之后，看过素材发现自己没什么想说的 —— 用这个记下理由，然后安静收手。别用它逃工作量，只在真的没必要开口时用。',
+    parameters: {
+      reason: { type: 'string', required: true, description: '一句话说明为什么这次不说，会记进流水。' }
+    },
+    output: {
+      schema: {
+        oneOf: [{
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            reclaimed: { type: 'boolean', required: true, const: true },
+            reason: { type: 'string', required: true }
+          }
+        }, ERROR_SCHEMA]
+      },
+      render: renderValue
+    },
+    async execute(args, exec) {
+      if (exec.agent !== agent) return internalError();
+      const reason = typeof args['reason'] === 'string' ? args['reason'].trim() : '';
+      if (reason === '') {
+        return { code: 'invalid_args', message: 'reason 不能为空，写一句为什么这次不说。' };
+      }
+      service.reclaim(reason);
+      return { reclaimed: true, reason };
+    },
+    presentCall: () => ({ type: 'text', text: '这次不开口' })
+  }));
+
+  add(defineTool({
+    name: 'purpose_settings',
+    description: '改目的机制的运行参数。只传要改的字段，其余保持不变。改完立刻生效并落盘。',
+    parameters: {
+      enabled: { type: 'boolean', description: '总开关。' },
+      min_gap_minutes: { type: 'integer', description: '两次评估的最小间隔（分钟）。' },
+      max_gap_minutes: { type: 'integer', description: '两次评估的最大间隔（分钟）。' },
+      score_threshold: { type: 'number', description: '低于这个分数就不开口，0~1。' },
+      max_deliveries_per_day: { type: 'integer', description: '每天最多主动开口几条。' },
+      max_wakeups_per_hour: { type: 'integer', description: '每小时内最多评估几次。' },
+      quiet_start: { type: 'string', description: '安静时段开始 HH:MM。' },
+      quiet_end: { type: 'string', description: '安静时段结束 HH:MM。' }
+    },
+    output: {
+      schema: {
+        oneOf: [{
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            ok: { type: 'boolean', required: true, const: true },
+            enabled: { type: 'boolean', required: true },
+            gapSeconds: { type: 'string', required: true },
+            scoreThreshold: { type: 'number', required: true },
+            maxDeliveriesPerDay: { type: 'integer', required: true },
+            maxWakeupsPerHour: { type: 'integer', required: true },
+            quietHours: { type: 'string', required: true }
+          }
+        }, ERROR_SCHEMA]
+      },
+      render: renderValue
+    },
+    async execute(args, exec) {
+      if (exec.agent !== agent) return internalError();
+      const patch = {};
+      if (typeof args['enabled'] === 'boolean') patch.enabled = args['enabled'];
+      if (Number.isFinite(args['min_gap_minutes'])) patch.minGapSeconds = Math.max(1, Math.trunc(args['min_gap_minutes'])) * 60;
+      if (Number.isFinite(args['max_gap_minutes'])) patch.maxGapSeconds = Math.max(1, Math.trunc(args['max_gap_minutes'])) * 60;
+      if (Number.isFinite(args['score_threshold'])) patch.scoreThreshold = Math.min(1, Math.max(0, args['score_threshold']));
+      if (Number.isFinite(args['max_deliveries_per_day'])) patch.maxDeliveriesPerDay = Math.max(0, Math.trunc(args['max_deliveries_per_day']));
+      if (Number.isFinite(args['max_wakeups_per_hour'])) patch.maxWakeupsPerHour = Math.max(1, Math.trunc(args['max_wakeups_per_hour']));
+      if (typeof args['quiet_start'] === 'string' && args['quiet_start'] !== '') patch.quietStart = args['quiet_start'];
+      if (typeof args['quiet_end'] === 'string' && args['quiet_end'] !== '') patch.quietEnd = args['quiet_end'];
+      try {
+        return service.patchConfig(patch);
+      } catch (error) {
+        return { code: 'invalid_args', message: error instanceof Error ? error.message : String(error) };
+      }
+    },
+    presentCall: () => ({ type: 'text', text: '改目的机制设置' })
+  }));
+
+  return () => {
+    for (const dispose of disposers) {
+      try {
+        dispose();
+      } catch {
+        // 单个工具注销失败不该影响其它工具的清理。
+      }
+    }
+  };
+}
+
+/** 默认配置的快照（给外部/测试用）。 */
+export function defaultConfigView() {
+  const config = DEFAULT_CONFIG;
+  return {
+    enabled: config.enabled,
+    gapSeconds: `${config.minGapSeconds}~${config.maxGapSeconds}`,
+    scoreThreshold: config.scoreThreshold,
+    maxDeliveriesPerDay: config.maxDeliveriesPerDay,
+    maxWakeupsPerHour: config.maxWakeupsPerHour,
+    quietHours: `${config.quietHours.start}-${config.quietHours.end}`,
+    now: toIso(Date.now())
+  };
+}

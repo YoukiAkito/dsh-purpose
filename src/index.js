@@ -1,0 +1,355 @@
+/**
+ * dsh-purpose —— 目的机制插件。
+ *
+ * 跟 dsh-proactive 的区别：
+ *   dsh-proactive  按你设定的闹钟醒来，醒来后自己看要不要说话
+ *   dsh-purpose    自己攒素材、自己提目标假设、自己打分，够了才叫醒自己
+ *
+ * 一次 tick 的流程见 engine.js。这里的职责只有四件：
+ *   1. 读配置、建 store、起定时器
+ *   2. 到点时把 tick 跑起来（同一时刻只跑一个，跑完再排下一次）
+ *   3. tick 决定要开口 → 把 prompt 投进目标会话，让它当一轮用户输入
+ *   4. 把 purpose_* 四个工具挂到每个 root agent 上
+ *
+ * 平台：darwin / linux。win32 在 apply 里直接抛错（本版不实现）。
+ */
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { resolveConfig, isInQuietHours, localZoneOffsetMinutes, parseClock } from './config.js';
+import { PurposeStore } from './store.js';
+import { tick as runTick, nextGapMs } from './engine.js';
+import { registerPurposeTools } from './tools.js';
+import { readJson, writeJsonAtomic, toIso } from './util.js';
+
+export const name = 'dsh-purpose';
+export const inject = ['agents', 'tools', 'sessionPersistence'];
+
+/** 单次 tick 最多跑多久，超时就当失败重排（防止某个环节卡死整个循环）。 */
+const TICK_TIMEOUT_MS = 120_000;
+/** 被占用的会话多久后重试。 */
+const BUSY_RETRY_MS = 60_000;
+
+export async function apply(ctx) {
+  const log = (level, message) => {
+    const fn = ctx.logger?.[level];
+    if (typeof fn === 'function') fn.call(ctx.logger, `[dsh-purpose] ${message}`);
+  };
+
+  let config;
+  try {
+    if (!existsSync(join(process.env.DSH_HOME ?? `${process.env.HOME ?? '.'}/.dsh`, 'purpose'))) {
+      // 目录不存在不致命，下面会建。
+    }
+    const base = resolveConfig({ platform: process.platform });
+    const file = readJson(join(base.dataDir, 'config.json'), {}, (error) => {
+      log('warn', `config.json 读取失败，用默认值：${error.message}`);
+    });
+    config = resolveConfig({ platform: process.platform, file: file ?? {} });
+  } catch (error) {
+    log('error', error instanceof Error ? error.message : String(error));
+    return async () => undefined;
+  }
+
+  if (!config.enabled) {
+    log('info', 'disabled by config.');
+    return async () => undefined;
+  }
+
+  mkdirSync(config.dataDir, { recursive: true });
+  const store = new PurposeStore(config.dataDir).load(log);
+
+  // 目标会话：config.json 里的 target.sessionId 优先，否则用当前 root agent。
+  const targetSessionId = typeof config.target?.sessionId === 'string' ? config.target.sessionId : '';
+
+  /** 状态快照给 purpose_status 用。 */
+  const stateView = () => {
+    const kinds = Object.entries(store.state.kinds)
+      .map(([kind, stat]) => `${kind}:${(stat?.confidence ?? 0.5).toFixed(2)}`)
+      .join(' ');
+    return {
+      enabled: config.enabled,
+      nextAt: store.state.nextAt === '' ? '（未安排）' : store.state.nextAt,
+      deliveredToday: store.state.day === todayKey() ? store.state.deliveredToday : 0,
+      maxDeliveriesPerDay: config.maxDeliveriesPerDay,
+      wakeupsLastHour: store.wakeupsLastHour(Date.now()),
+      maxWakeupsPerHour: config.maxWakeupsPerHour,
+      gapSeconds: `${config.minGapSeconds}~${config.maxGapSeconds}`,
+      scoreThreshold: config.scoreThreshold,
+      quietHours: `${config.quietHours.start}-${config.quietHours.end}`,
+      coolingCount: store.coolingMap().size,
+      kinds: kinds === '' ? '（还没有历史）' : kinds
+    };
+  };
+
+  /** 改配置：写回 config.json 并热更新内存里的 config。 */
+  const patchConfig = (patch) => {
+    if (patch.quietStart !== undefined) parseClock(patch.quietStart, 'start');
+    if (patch.quietEnd !== undefined) parseClock(patch.quietEnd, 'end');
+    const next = {
+      ...config,
+      ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+      ...(patch.minGapSeconds !== undefined ? { minGapSeconds: patch.minGapSeconds } : {}),
+      ...(patch.maxGapSeconds !== undefined ? { maxGapSeconds: patch.maxGapSeconds } : {}),
+      ...(patch.scoreThreshold !== undefined ? { scoreThreshold: patch.scoreThreshold } : {}),
+      ...(patch.maxDeliveriesPerDay !== undefined ? { maxDeliveriesPerDay: patch.maxDeliveriesPerDay } : {}),
+      ...(patch.maxWakeupsPerHour !== undefined ? { maxWakeupsPerHour: patch.maxWakeupsPerHour } : {})
+    };
+    if (patch.quietStart !== undefined || patch.quietEnd !== undefined) {
+      next.quietHours = {
+        ...config.quietHours,
+        start: patch.quietStart ?? config.quietHours.start,
+        end: patch.quietEnd ?? config.quietHours.end
+      };
+    }
+    writeJsonAtomic(join(config.dataDir, 'config.json'), serializable(next));
+    config = next;
+    log('info', `配置已更新：间隔 ${next.minGapSeconds}~${next.maxGapSeconds}s、阈值 ${next.scoreThreshold}、每日 ${next.maxDeliveriesPerDay} 条、安静时段 ${next.quietHours.start}-${next.quietHours.end}`);
+    return {
+      ok: true,
+      enabled: next.enabled,
+      gapSeconds: `${next.minGapSeconds}~${next.maxGapSeconds}`,
+      scoreThreshold: next.scoreThreshold,
+      maxDeliveriesPerDay: next.maxDeliveriesPerDay,
+      maxWakeupsPerHour: next.maxWakeupsPerHour,
+      quietHours: `${next.quietHours.start}-${next.quietHours.end}`
+    };
+  };
+
+  /** 这一轮我不说：记一笔，间隔顺延。 */
+  const reclaim = (reason) => {
+    store.recordRun({ decision: 'silent', reason: `agent_reclaim: ${reason}` });
+    store.state.nextAt = toIso(Date.now() + nextGapMs(config));
+    store.persist();
+    log('info', `本轮不开口：${reason}`);
+  };
+
+  /**
+   * 把 prompt 投进目标会话。
+   *
+   * 复用 dsh-proactive 的做法：live agent 直接 followup；冷会话先 resume，
+   * resume 时必须把会话自己的 preset mount 回去，否则 agent 只剩 host-plane
+   * 工具（bash/read 全报 unknown tool）。
+   */
+  const deliver = async ({ prompt }) => {
+    const sessionId = targetSessionId;
+    if (sessionId === '') {
+      log('warn', '没有配置 target.sessionId，跳过投递');
+      return 'failed';
+    }
+    const live = ctx.agents.get(sessionId);
+    let handle = null;
+    let agent = live;
+    let composed = false;
+    if (agent === undefined) {
+      const presets = ctx.get('agentPresets', false);
+      const resolvePreset = () => {
+        const session = agent?.session;
+        if (session === undefined) return undefined;
+        const events = Array.isArray(session.events) ? session.events : typeof session.snapshotEvents === 'function' ? session.snapshotEvents() : [];
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = events[index];
+          if (event?.type === 'agent-preset/selected') return event.data?.agentPreset;
+        }
+        return session.header?.agentPreset;
+      };
+      handle = await ctx.agents.resume({
+        resumeSessionId: sessionId,
+        setup: async (agentCtx, resumed) => {
+          agent = resumed;
+          composed = true;
+          if (presets === undefined || typeof presets.mount !== 'function') return;
+          const presetId = resolvePreset();
+          if (presetId !== undefined) await presets.mount(agentCtx, presetId);
+        }
+      });
+      agent = handle?.agent ?? agent;
+    }
+    if (agent === undefined) {
+      log('warn', `无法获得会话 ${sessionId} 的 agent`);
+      return 'failed';
+    }
+
+    const message = { role: 'user', content: [{ type: 'text', text: prompt }] };
+    let claimed = false;
+    try {
+      claimed = await agent.runMaintenance(() => {
+        agent.followup(message);
+        return Promise.resolve(true);
+      });
+    } catch (error) {
+      log('warn', `投递被拒（可能正忙）：${error instanceof Error ? error.message : String(error)}`);
+      claimed = false;
+    }
+    if (!claimed) {
+      if (handle !== null) {
+        try {
+          handle.dispose?.();
+        } catch {
+          // 释放失败不影响后续重试。
+        }
+      }
+      return 'silent';
+    }
+    try {
+      await agent.whenIdle();
+    } catch (error) {
+      log('warn', `等待回合结束失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (handle !== null) {
+      try {
+        handle.dispose?.();
+      } catch {
+        // 同上。
+      }
+    }
+    return 'sent';
+  };
+
+  let timer = null;
+  let stopped = false;
+  let running = false;
+
+  const schedule = (delayMs) => {
+    if (stopped) return;
+    if (timer !== null) clearTimeout(timer);
+    const wait = Math.max(1_000, Math.min(2_147_483_647, Math.round(delayMs)));
+    timer = setTimeout(() => {
+      timer = null;
+      void loop();
+    }, wait);
+    if (typeof timer.unref === 'function') timer.unref();
+  };
+
+  const loop = async () => {
+    if (stopped || running) return;
+    running = true;
+    try {
+      const result = await withTimeout(runTick({
+        store,
+        config,
+        deliver,
+        log,
+        sessionLogPath: sessionLogPathOf(ctx, targetSessionId),
+        thoughtsPath: join(config.dataDir, 'thoughts.jsonl')
+      }), TICK_TIMEOUT_MS);
+      if (result?.nextAt !== undefined) store.state.nextAt = result.nextAt;
+      const nextAtMs = Date.parse(store.state.nextAt);
+      const delay = Number.isFinite(nextAtMs) ? nextAtMs - Date.now() : nextGapMs(config);
+      log('info', `tick → ${result?.decision ?? 'unknown'}${result?.reason !== undefined ? `(${result.reason})` : ''}，下次 ${store.state.nextAt || toIso(Date.now() + delay)}`);
+      schedule(delay);
+    } catch (error) {
+      log('warn', `tick 失败：${error instanceof Error ? error.message : String(error)}`);
+      schedule(BUSY_RETRY_MS);
+    } finally {
+      running = false;
+      store.persist();
+    }
+  };
+
+  // 注册工具：每个 root agent 一次（含之后才出现的）。
+  const registered = new WeakSet();
+  const service = {
+    state: stateView,
+    goals: (limit) => store.recentGoals(limit),
+    reclaim,
+    patchConfig
+  };
+  const registerOne = (agent) => {
+    if (registered.has(agent)) return;
+    if (!ctx.agents.roots().includes(agent)) return;
+    registered.add(agent);
+    try {
+      registerPurposeTools(agent.ctx, agent, service);
+    } catch (error) {
+      log('warn', `注册工具失败：${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+  const stopCreated = ctx.on('agent/created', ({ agent }) => {
+    registerOne(agent);
+    return undefined;
+  });
+  for (const existing of ctx.agents.roots()) registerOne(existing);
+
+  // 排第一次：如果 state 里已有 nextAt 就用它，否则按 firstDelay 起算。
+  const parsed = Date.parse(store.state.nextAt);
+  const firstDelay = Number.isFinite(parsed)
+    ? Math.max(1_000, parsed - Date.now())
+    : config.firstDelaySeconds * 1000;
+  store.state.nextAt = toIso(Date.now() + firstDelay);
+  store.persist();
+  log('info', `started: dataDir=${config.dataDir} target=${targetSessionId || '（未配置）'} gap=${config.minGapSeconds}~${config.maxGapSeconds}s quiet=${config.quietHours.start}-${config.quietHours.end}`);
+  schedule(firstDelay);
+
+  return async () => {
+    stopped = true;
+    stopCreated();
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    store.persist();
+    log('info', 'stopped.');
+  };
+}
+
+/** 给 tick 加超时，避免某个 suspend 挂死整个循环。 */
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`tick 超过 ${ms}ms 未完成`)), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+/** 目标会话的日志路径（能取到就取，取不到返回空串，采集器会跳过）。 */
+function sessionLogPathOf(ctx, sessionId) {
+  if (sessionId === '') return '';
+  const persistence = ctx.get('sessionPersistence', false);
+  if (persistence !== undefined && typeof persistence.pathOf === 'function') {
+    try {
+      const path = persistence.pathOf(sessionId);
+      if (typeof path === 'string' && path !== '') return path;
+    } catch {
+      // 忽略：退回下面的猜测路径。
+    }
+  }
+  const home = process.env.DSH_HOME ?? `${process.env.HOME ?? '.'}/.dsh`;
+  return join(home, 'sessions', sessionId, 'session.v4.jsonl');
+}
+
+function todayKey() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** 落盘前去掉运行时字段（config 里可能有 quietHours 之外的东西）。 */
+function serializable(config) {
+  return {
+    enabled: config.enabled,
+    minGapSeconds: config.minGapSeconds,
+    maxGapSeconds: config.maxGapSeconds,
+    quietHours: config.quietHours,
+    maxDeliveriesPerDay: config.maxDeliveriesPerDay,
+    maxWakeupsPerHour: config.maxWakeupsPerHour,
+    scoreThreshold: config.scoreThreshold,
+    dedupeSimilarity: config.dedupeSimilarity,
+    maxAttemptsPerGoal: config.maxAttemptsPerGoal,
+    goalCooldownSeconds: config.goalCooldownSeconds,
+    materialWindowHours: config.materialWindowHours,
+    firstDelaySeconds: config.firstDelaySeconds,
+    confidence: config.confidence,
+    maxMaterials: config.maxMaterials,
+    maxMaterialChars: config.maxMaterialChars,
+    target: { sessionId: config.target?.sessionId ?? '' }
+  };
+}
