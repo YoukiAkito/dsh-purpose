@@ -44,7 +44,7 @@ export class IntentRuntime {
       };
     }
     if (this.state.lastEvolvedAt === 0) this.state.lastEvolvedAt = Date.now();
-    return this.state;
+    return this;
   }
 
   persist() {

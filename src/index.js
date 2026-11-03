@@ -60,7 +60,8 @@ export async function apply(ctx) {
 
   mkdirSync(config.dataDir, { recursive: true });
   const store = new PurposeStore(config.dataDir).load(log);
-  const intent = new IntentRuntime(config.dataDir).load(log);
+  const intent = new IntentRuntime(config.dataDir);
+  intent.load(log);
   /** 下一次念头评估的时刻（毫秒）；null = 未安排。 */
   let intentNextAt = null;
 

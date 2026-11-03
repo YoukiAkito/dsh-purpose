@@ -16,7 +16,7 @@ function withDir(fn) {
 
 test('首次 load 用空状态并填默认驱动', () => withDir((dir) => {
   const rt = new IntentRuntime(dir);
-  const state = rt.load();
+  const state = rt.load().state;
   assert.equal(state.version, EMPTY_INTENT_STATE.version);
   assert.ok(state.drives.curiosity > 0);
   assert.deepEqual(state.recentIntentionIds, []);
@@ -102,5 +102,11 @@ test('view 输出可用摘要', () => withDir((dir) => {
 test('坏 state.json 不炸，回落默认', () => withDir((dir) => {
   writeFileSync(join(dir, 'intent-state.json'), '{这不是 json');
   const rt = new IntentRuntime(dir);
-  assert.equal(rt.load().version, EMPTY_INTENT_STATE.version);
+  assert.equal(rt.load().state.version, EMPTY_INTENT_STATE.version);
+}));
+
+test('load 返回 runtime 自己，可以链式接 ledger', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  assert.equal(typeof rt.ledger.add, 'function');
+  assert.equal(rt.ledger.all().length, 0);
 }));
