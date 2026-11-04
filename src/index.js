@@ -245,16 +245,22 @@ export async function apply(ctx) {
     try {
       // 出门看一眼：不看闹钟，看好奇心涨到哪儿了。
       // 看完把好奇心压下去，省得下一个 tick 又想出去。
+      // 安静时段不出门：素材回来也会被 tick 的安静闸门丢掉，白跑一趟还白降好奇心。
       let external = [];
       if (config.external.enabled && biliCli !== '') {
         try {
           intent.advanceDrives(Date.now());
-          const verdict = shouldGlance(intent.state.drives, {
-            lastGlanceAt: lastGlanceAt(glancePath),
-            now: Date.now(),
-            threshold: config.external.threshold,
-            gapMs: config.external.gapMinutes * 60_000
-          });
+          const zone = Number.isFinite(config.quietHours.timeZone) && config.quietHours.timeZone !== ''
+            ? config.quietHours.timeZone
+            : localZoneOffsetMinutes(Date.now());
+          const verdict = isInQuietHours(Date.now(), config, zone)
+            ? { glance: false, reason: 'quiet_hours' }
+            : shouldGlance(intent.state.drives, {
+              lastGlanceAt: lastGlanceAt(glancePath),
+              now: Date.now(),
+              threshold: config.external.threshold,
+              gapMs: config.external.gapMinutes * 60_000
+            });
           if (verdict.glance) {
             const seen = await glance({ cli: biliCli, log });
             external = seen.materials;
