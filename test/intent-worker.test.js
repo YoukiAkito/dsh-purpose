@@ -5,6 +5,7 @@ import {
   IntentExecutor,
   SAFE_RISK_CLASSES,
   WORKER_DEFAULTS,
+  buildAskPrompt,
   buildWorkerPrompt,
   resolveWorkerConfig,
   shouldExecute
@@ -106,6 +107,20 @@ test('buildWorkerPrompt 带上念头本身，别让 worker 自己猜', () => {
   assert.match(prompt, /把会话日志的解压逻辑整理成一个小模块/);
   assert.match(prompt, /unfinished/);
   assert.match(prompt, /0.8/);
+});
+
+test('buildAskPrompt 让她用自己的话开口，不要念分数', () => {
+  const prompt = buildAskPrompt(chosen({ score: 0.71, risk: 0.3 }));
+  assert.match(prompt, /把会话日志的解压逻辑整理成一个小模块/);
+  assert.match(prompt, /用你自己的话/);
+  assert.match(prompt, /别念分数/);
+  assert.match(prompt, /别提插件或账本/);
+});
+
+test('buildAskPrompt 把 kind 翻成人话，不暴露内部枚举', () => {
+  assert.match(buildAskPrompt(chosen({ kind: 'whim' })), /一闪而过的念头/);
+  assert.match(buildAskPrompt(chosen({ kind: 'wish' })), /想做但还做不了的/);
+  assert.match(buildAskPrompt(chosen({ kind: '不知道' })), /念头/);
 });
 
 test('IntentExecutor 没有 createWorker 时拒跑', async () => {

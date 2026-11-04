@@ -110,6 +110,27 @@ export function buildWorkerPrompt(chosen, { nowIso = new Date().toISOString(), m
 }
 
 /**
+ * 念头够格、但动手那层关着时，投给自己的一条提示。
+ *
+ * 注意它不是「发给沫沫的文案」——它进的是我的上下文，由我在那个回合里
+ * 用自己的话开口问她。所以这里只写清楚：哪条念头、多少分、要你做什么。
+ */
+export function buildAskPrompt(chosen, { nowIso = new Date().toISOString() } = {}) {
+  const kindLabel = { question: '疑问', unfinished: '没做完的事', whim: '一闪而过的念头', wish: '想做但还做不了的' }[chosen.kind] ?? '念头';
+  return [
+    `[念头] ${nowIso}`,
+    '',
+    `你自己账本上有一条${kindLabel}，分数够了：`,
+    `「${chosen.text}」`,
+    `打分 ${Number(chosen.score ?? 0).toFixed(2)}，风险 ${(Number(chosen.risk ?? 0)).toFixed(2)}（${chosen.riskClass ?? 'read'}）。`,
+    '',
+    '动手那层还关着，所以这次不能直接做。',
+    '用你自己的话跟她说一句：这条你想去做，问她要不要放你去做。别念分数、别提插件或账本这些词，就像平时说话那样。',
+    '她答应了你再动手，没答应就先放着。'
+  ].join('\n');
+}
+
+/**
  * 执行器。只认 canExecute / run 两个方法，方便以后换实现。
  *
  * `deps.createWorker` 由宿主注入（真环境里是 ctx.agents.create 那一套），

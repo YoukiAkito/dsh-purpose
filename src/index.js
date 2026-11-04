@@ -20,7 +20,7 @@ import { PurposeStore } from './store.js';
 import { tick as runTick, nextGapMs } from './engine.js';
 import { registerPurposeTools } from './tools.js';
 import { IntentRuntime } from './intent-runtime.js';
-import { IntentExecutor, resolveWorkerConfig } from './intent-worker.js';
+import { IntentExecutor, resolveWorkerConfig, buildAskPrompt } from './intent-worker.js';
 import { describeDrives } from './drives.js';
 import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
 import { readJson, readJsonl, writeJsonAtomic, toIso } from './util.js';
@@ -90,6 +90,7 @@ export async function apply(ctx) {
       intentTension: iv.tension,
       intentDrives: describeDrives(iv.drives),
       openIntentions: iv.openIntentions,
+      intentAskedAt: iv.lastAskAt === '' ? '（还没问过）' : iv.lastAskAt,
       intentNextAt: intentNextAt === null ? '（未安排）' : toIso(intentNextAt)
     };
   };
@@ -427,8 +428,21 @@ export async function apply(ctx) {
         });
         intent.settle(result, outcome);
         log('info', `[念头] ${outcome.ok === true ? '做完' : '没做成'}：${result.chosen.text.slice(0, 30)}`);
-      } else if (result?.decision === 'act' && result.chosen !== null) {
-        log('info', `[念头] 够格动手但 execute=off，只报告：${result.chosen.text.slice(0, 30)}`);
+      } else if (result?.decision === 'act' && result.chosen !== null && config.intent.askWhenQualified) {
+        // 够格但动手那层关着：不发呆在日志里，直接开口问她一句要不要做。
+        // 同一条念头问过就不再问，两次追问之间也隔着 MIN_ASK_GAP_HOURS。
+        const gate = intent.shouldAsk(result);
+        if (gate.ask) {
+          const outcome = await deliver({ prompt: buildAskPrompt(result.chosen) });
+          if (outcome === 'sent') {
+            intent.markAsked(result.chosen.id);
+            log('info', `[念头] 够格，已开口问：${result.chosen.text.slice(0, 30)}`);
+          } else {
+            log('warn', `[念头] 够格，但没问出去（${outcome}）：${result.chosen.text.slice(0, 30)}`);
+          }
+        } else {
+          log('info', `[念头] 够格但暂不追问（${gate.reason}）：${result.chosen.text.slice(0, 30)}`);
+        }
       }
     } catch (error) {
       log('warn', `念头评估失败：${error instanceof Error ? error.message : String(error)}`);

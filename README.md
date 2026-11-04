@@ -112,7 +112,7 @@ cd ~/.dsh/profiles/desktop
 
 分数够了不等于可以乱来，还有两道闸：
 
-- **总闸** `intent.execute`，默认 `false`。关着的时候，即便念头过了 0.62，也只写一行日志告诉你「够格但我没动」。
+- **总闸** `intent.execute`，默认 `false`。关着的时候即便念头过了 0.62 也不会自己动手，而是**发一条消息来问你**要不要做（`askWhenQualified`，默认开）。同一条念头问过之后 20 小时内不再问，两次追问之间至少隔 4 小时。
 - **风险闸** `shouldExecute()`：分数要过自主阈值、`risk < 0.5`、风险类别要在白名单里。白名单只收 `read` / `research` / `write_workspace`；`write_outside` / `publish` / `install` / `contact` 四类**写死在代码里永不自动执行**，配置文件里显式加上也会被 `resolveWorkerConfig()` 过滤掉——这是设计上不开放的，不是配置能打开的开关。
 
 真动手时开一个**独立的一次性会话**（`ctx.agents.create`），不是往主对话塞 followup：worker 有自己的会话，干完就 `dispose`，不污染主对话，也不会把结果当成用户消息发出去。提示词里写死三条：只做这一件事、不对外发任何东西、做完不要向任何人汇报。跑完记一条到 `intent-runs.jsonl`，用 `purpose_runs` 工具看。
@@ -130,6 +130,7 @@ cd ~/.dsh/profiles/desktop
     "threshold": 0.45,
     "autonomousThreshold": 0.62,
     "execute": false,
+    "askWhenQualified": true,
     "workerPreset": "",
     "worker": {
       "maxSteps": 12,
@@ -152,7 +153,7 @@ cd ~/.dsh/profiles/desktop
 node --test test/
 ```
 
-106 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛。
+116 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制。
 
 ## 许可
 
@@ -165,7 +166,8 @@ GNU General Public License v2.0（GPL-2.0-only）。
 - **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
 - **素材只读会话日志**：B 站/网页那类外部素材要调用方通过 `external` 传进来，插件不会自己去抓。
 - **没有 Web 面板**：只有工具和 JSONL 文件，看状态走 `purpose_status` / `purpose_intentions` 或直接读盘。
-- **动手那层默认关着**：`intent.execute = false`。打分和闸门都在跑，够格也只写日志，要显式打开才会开 worker 会话。worker 也没做步数硬中断——「最多 N 步」只是写在提示词里的约束，真正的刹车是时间盒（到点 `cancel`）。
+- **动手那层默认关着**：`intent.execute = false`。打分和闸门都在跑，够格不会自己动手，而是发一条消息来问你要不要做（`askWhenQualified`，默认开）。worker 也没做步数硬中断——「最多 N 步」只是写在提示词里的约束，真正的刹车是时间盒（到点 `cancel`）。
+- **追问有频率限制**：同一条念头问过之后 20 小时内不再问（`ASK_COOLDOWN_HOURS`），两次追问之间至少隔 4 小时（`MIN_ASK_GAP_HOURS`）。冷却按「每条念头自己的上次询问时间」记，问 A 不会把 B 的冷却刷新掉。
 
 ## 读会话日志的两个坑（都踩过，写下来省得再踩）
 

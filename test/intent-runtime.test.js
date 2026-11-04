@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { EMPTY_INTENT_STATE, IntentRuntime } from '../src/intent-runtime.js';
+import { EMPTY_INTENT_STATE, IntentRuntime, ASK_COOLDOWN_HOURS, MIN_ASK_GAP_HOURS } from '../src/intent-runtime.js';
 
 function withDir(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-purpose-rt-'));
@@ -109,4 +109,74 @@ test('load 返回 runtime 自己，可以链式接 ledger', () => withDir((dir) 
   const rt = new IntentRuntime(dir).load();
   assert.equal(typeof rt.ledger.add, 'function');
   assert.equal(rt.ledger.all().length, 0);
+}));
+
+test('shouldAsk：没念头就不问', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  assert.equal(rt.shouldAsk({ chosen: null }).ask, false);
+  assert.equal(rt.shouldAsk({ chosen: null }).reason, 'no_intention');
+}));
+
+test('shouldAsk：够格且没问过 → 问', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  const gate = rt.shouldAsk({ chosen: { id: 'i_a', text: 'x' } });
+  assert.equal(gate.ask, true);
+  assert.equal(gate.reason, 'qualified');
+}));
+
+test('markAsked 之后同一念头进入冷却，不再追问', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  const now = Date.parse('2026-11-04T04:00:00.000Z');
+  rt.markAsked('i_a', now);
+  const gate = rt.shouldAsk({ chosen: { id: 'i_a', text: 'x' } }, now + 3600_000);
+  assert.equal(gate.ask, false);
+  assert.equal(gate.reason, 'already_asked');
+}));
+
+test('冷却期满之后同一念头可以再问', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  const now = Date.parse('2026-11-04T04:00:00.000Z');
+  rt.markAsked('i_a', now);
+  const later = now + (ASK_COOLDOWN_HOURS + 1) * 3600_000;
+  assert.equal(rt.shouldAsk({ chosen: { id: 'i_a', text: 'x' } }, later).ask, true);
+}));
+
+test('两次追问之间至少隔 MIN_ASK_GAP_HOURS', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  const now = Date.parse('2026-11-04T04:00:00.000Z');
+  rt.markAsked('i_a', now);
+  // 换一条新念头，但刚问过一次，仍然要等
+  const gate = rt.shouldAsk({ chosen: { id: 'i_b', text: 'y' } }, now + 1800_000);
+  assert.equal(gate.ask, false);
+  assert.match(gate.reason, /^ask_gap\(/);
+}));
+
+test('问 A 不会刷新 B 的冷却', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  const t0 = Date.parse('2026-11-04T04:00:00.000Z');
+  rt.markAsked('i_a', t0);
+  const t1 = t0 + (MIN_ASK_GAP_HOURS + 1) * 3600_000;
+  rt.markAsked('i_b', t1);
+  const t2 = t1 + 3600_000;
+  // A 上次是 t0，过了 ASK_COOLDOWN_HOURS 就放行；B 刚问过还在冷却
+  const after = t0 + (ASK_COOLDOWN_HOURS + 1) * 3600_000;
+  assert.equal(rt.shouldAsk({ chosen: { id: 'i_b', text: 'y' } }, after).ask, false);
+}));
+
+test('askedAt 落盘后重新 load 仍然生效', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  const now = Date.parse('2026-11-04T04:00:00.000Z');
+  rt.markAsked('i_a', now);
+  const again = new IntentRuntime(dir).load();
+  assert.equal(again.shouldAsk({ chosen: { id: 'i_a', text: 'x' } }, now + 600_000).ask, false);
+  assert.ok(typeof again.view().lastAskAt === 'string');
+}));
+
+test('view 暴露 lastAskAt 与 askedCount', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir).load();
+  assert.equal(rt.view().lastAskAt, '');
+  assert.equal(rt.view().askedCount, 0);
+  rt.markAsked('i_a', Date.parse('2026-11-04T04:00:00.000Z'));
+  assert.equal(rt.view().askedCount, 1);
+  assert.notEqual(rt.view().lastAskAt, '');
 }));

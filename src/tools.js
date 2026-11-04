@@ -47,6 +47,7 @@ const STATUS_SCHEMA = {
     intentTension: { type: 'number', required: true },
     intentDrives: { type: 'string', required: true },
     openIntentions: { type: 'integer', required: true },
+    intentAskedAt: { type: 'string', required: true },
     intentNextAt: { type: 'string', required: true }
   }
 };

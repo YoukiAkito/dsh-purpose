@@ -56,6 +56,11 @@ export const DEFAULT_CONFIG = {
     autonomousThreshold: 0.62,
     /** 总闸：false = 即便够格也只写日志，真开 worker 要它点头。 */
     execute: false,
+    /**
+     * 够格但 execute=off 时，要不要主动发消息问她「这个要不要做」。
+     * 默认开：只在日志里躺着等于白想。同一条念头问过就不再问。
+     */
+    askWhenQualified: true,
     /** worker 会话挂哪个人设；留空 = 不挂（只有 host-plane 工具）。 */
     workerPreset: '',
     /**
@@ -187,6 +192,7 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
       threshold: floatOf(intent.threshold, DEFAULT_CONFIG.intent.threshold, 0, 1),
       autonomousThreshold: floatOf(intent.autonomousThreshold, DEFAULT_CONFIG.intent.autonomousThreshold, 0, 1),
       execute: typeof intent.execute === 'boolean' ? intent.execute : DEFAULT_CONFIG.intent.execute,
+      askWhenQualified: typeof intent.askWhenQualified === 'boolean' ? intent.askWhenQualified : DEFAULT_CONFIG.intent.askWhenQualified,
       workerPreset: typeof intent.workerPreset === 'string' ? intent.workerPreset : DEFAULT_CONFIG.intent.workerPreset,
       worker: {
         maxSteps: intOf(intent.worker?.maxSteps, DEFAULT_CONFIG.intent.worker.maxSteps, 1, 60),

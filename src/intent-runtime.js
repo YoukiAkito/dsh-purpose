@@ -18,12 +18,22 @@ export const EMPTY_INTENT_STATE = Object.freeze({
   drives: {},
   lastEvolvedAt: 0,
   recentIntentionIds: [],
+  /** 已经开口问过她的念头 id（避免同一条反复追问）。 */
+  askedIntentionIds: [],
+  /** 每条念头上次被问的毫秒时间戳：{ intentionId: ms }。 */
+  askedAt: {},
+  /** 上一次开口问的时间（毫秒），用来限制追问频率。 */
+  lastAskAt: 0,
   lastDecision: '',
   lastRunAt: 0
 });
 
 const MAX_RECENT = 20;
 const RECENT_WINDOW_HOURS = 48;
+/** 同一条念头问过一次后，多久之内不再追问。 */
+export const ASK_COOLDOWN_HOURS = 20;
+/** 两次追问之间至少隔多久，防止一天里反复冒出来烦人。 */
+export const MIN_ASK_GAP_HOURS = 4;
 
 export class IntentRuntime {
   constructor(dataDir) {
@@ -40,7 +50,10 @@ export class IntentRuntime {
         ...EMPTY_INTENT_STATE,
         ...raw,
         drives: normalizeDrives(raw.drives),
-        recentIntentionIds: Array.isArray(raw.recentIntentionIds) ? raw.recentIntentionIds.slice(-MAX_RECENT) : []
+        recentIntentionIds: Array.isArray(raw.recentIntentionIds) ? raw.recentIntentionIds.slice(-MAX_RECENT) : [],
+        askedIntentionIds: Array.isArray(raw.askedIntentionIds) ? raw.askedIntentionIds.slice(-MAX_RECENT) : [],
+        askedAt: raw.askedAt !== null && typeof raw.askedAt === 'object' ? { ...raw.askedAt } : {},
+        lastAskAt: Number(raw.lastAskAt) || 0
       };
     }
     if (this.state.lastEvolvedAt === 0) this.state.lastEvolvedAt = Date.now();
@@ -182,6 +195,45 @@ export class IntentRuntime {
     this.persist();
   }
 
+  /**
+   * 该不该为这个念头开口问她。
+   *
+   * 规则：同一条念头问过就不再问（除非过了冷却期）；两次追问之间也要隔开，
+   * 免得一天里反复拿账本上的事去烦她。
+   *
+   * @returns {{ask:boolean, reason:string}}
+   */
+  shouldAsk(result, now = Date.now()) {
+    const chosen = result?.chosen ?? null;
+    if (chosen === null) return { ask: false, reason: 'no_intention' };
+    // 先看这条念头自己：问过且还在冷却里，直接挡掉（哪怕刚过全局间隔）。
+    // 按「这条念头上次被问的时间」判，而不是全局上次问的时间——
+    // 否则问过 A 之后再问 B，A 的冷却会被 B 的询问刷新掉。
+    const askedAt = this.state.askedAt ?? {};
+    const mineAt = Number(askedAt[chosen.id]) || 0;
+    if (mineAt > 0 && (now - mineAt) / 3600_000 < ASK_COOLDOWN_HOURS) {
+      return { ask: false, reason: 'already_asked' };
+    }
+    const lastAskAt = Number(this.state.lastAskAt) || 0;
+    const hoursSinceAsk = lastAskAt === 0 ? Infinity : (now - lastAskAt) / 3600_000;
+    if (hoursSinceAsk < MIN_ASK_GAP_HOURS) {
+      return { ask: false, reason: `ask_gap(${hoursSinceAsk.toFixed(1)}h<${MIN_ASK_GAP_HOURS}h)` };
+    }
+    return { ask: true, reason: 'qualified' };
+  }
+
+  /** 记下「为这条念头开口问过了」。 */
+  markAsked(intentionId, now = Date.now()) {
+    if (typeof intentionId !== 'string' || intentionId === '') return;
+    this.state.askedIntentionIds = [...this.state.askedIntentionIds, intentionId].slice(-MAX_RECENT);
+    const askedAt = { ...(this.state.askedAt ?? {}), [intentionId]: now };
+    // 只留最近 MAX_RECENT 条，防止文件无限长大。
+    const keep = new Set(this.state.askedIntentionIds);
+    this.state.askedAt = Object.fromEntries(Object.entries(askedAt).filter(([id]) => keep.has(id)));
+    this.state.lastAskAt = now;
+    this.persist();
+  }
+
   /** 日志视图：给 purpose_status 用，不暴露内部全量。 */
   view() {
     const now = Date.now();
@@ -191,6 +243,8 @@ export class IntentRuntime {
       tension: Number(tensionOf(this.state.drives).toFixed(3)),
       lastDecision: this.state.lastDecision,
       lastRunAt: this.state.lastRunAt === 0 ? '' : new Date(this.state.lastRunAt).toISOString(),
+      lastAskAt: Number(this.state.lastAskAt) > 0 ? new Date(Number(this.state.lastAskAt)).toISOString() : '',
+      askedCount: Array.isArray(this.state.askedIntentionIds) ? this.state.askedIntentionIds.length : 0,
       openIntentions: open.length,
       top: open.slice(0, 5).map((r) => ({
         id: r.id,
