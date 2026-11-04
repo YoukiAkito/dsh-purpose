@@ -419,17 +419,33 @@ export async function apply(ctx) {
         maxWakeupsPerHour: config.maxWakeupsPerHour
       });
 
-      // 只有「决定动手」+「总闸开着」才往下走；其余情况 evaluate 已经记好日志了。
-      if (result?.decision === 'act' && result.chosen !== null && config.intent.execute) {
-        const outcome = await executor.run(result.chosen, {
+      // 分数够格了，分三种情况：
+      //   1. 总闸开着 + 风险低 → 直接开工
+      //   2. 总闸开着但风险高 → 不自己动手，改成问她（并说明可能后果）
+      //   3. 总闸关着 → 问她
+      const qualified = result?.decision === 'act' && result.chosen !== null;
+      let ran = false;
+      if (qualified && config.intent.execute) {
+        const verdict = executor.canExecute(result.chosen, {
           workerConfig,
-          autonomousThreshold: config.intent.autonomousThreshold,
-          workspaceRoot: process.cwd()
+          autonomousThreshold: config.intent.autonomousThreshold
         });
-        intent.settle(result, outcome);
-        log('info', `[念头] ${outcome.ok === true ? '做完' : '没做成'}：${result.chosen.text.slice(0, 30)}`);
-      } else if (result?.decision === 'act' && result.chosen !== null && config.intent.askWhenQualified) {
-        // 够格但动手那层关着：不发呆在日志里，直接开口问她一句要不要做。
+        if (verdict.execute) {
+          ran = true;
+          const outcome = await executor.run(result.chosen, {
+            workerConfig,
+            autonomousThreshold: config.intent.autonomousThreshold,
+            workspaceRoot: process.cwd()
+          });
+          intent.settle(result, outcome);
+          log('info', `[念头] ${outcome.ok === true ? '做完' : '没做成'}：${result.chosen.text.slice(0, 30)}`);
+        } else {
+          // 风险太高或类别不在白名单：不是压下去，是拿去问她。
+          log('info', `[念头] 够格但不能自己动手（${verdict.reason}），改成问她`);
+        }
+      }
+      if (qualified && !ran && (config.intent.askWhenQualified || config.intent.execute)) {
+        // 够格但不自己动手：不发呆在日志里，直接开口问她一句要不要做。
         // 同一条念头问过就不再问，两次追问之间也隔着 MIN_ASK_GAP_HOURS。
         const gate = intent.shouldAsk(result);
         if (gate.ask) {

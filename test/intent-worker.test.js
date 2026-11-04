@@ -6,6 +6,7 @@ import {
   SAFE_RISK_CLASSES,
   WORKER_DEFAULTS,
   buildAskPrompt,
+  describeRisk,
   buildWorkerPrompt,
   resolveWorkerConfig,
   shouldExecute
@@ -121,6 +122,41 @@ test('buildAskPrompt 把 kind 翻成人话，不暴露内部枚举', () => {
   assert.match(buildAskPrompt(chosen({ kind: 'whim' })), /一闪而过的念头/);
   assert.match(buildAskPrompt(chosen({ kind: 'wish' })), /想做但还做不了的/);
   assert.match(buildAskPrompt(chosen({ kind: '不知道' })), /念头/);
+});
+
+test('低风险念头不必啰嗦风险说明', () => {
+  const prompt = buildAskPrompt(chosen({ risk: 0.2, riskClass: 'read' }));
+  assert.doesNotMatch(prompt, /风险不低/);
+});
+
+test('风险打高分时要求把可能发生什么讲清楚', () => {
+  const prompt = buildAskPrompt(chosen({ risk: 0.7, riskClass: 'write_workspace' }));
+  assert.match(prompt, /风险不低/);
+  assert.match(prompt, /可能发生什么/);
+});
+
+test('高风险类别即便 risk 数值不高，也要说明后果', () => {
+  const prompt = buildAskPrompt(chosen({ risk: 0.1, riskClass: 'publish' }));
+  assert.match(prompt, /风险不低/);
+  assert.match(prompt, /发出去就收不回来/);
+});
+
+test('describeRisk 每类都给具体后果，不只是「有风险」', () => {
+  for (const cls of GUARDED_RISK_CLASSES) {
+    const text = describeRisk({ riskClass: cls, risk: 0.6 });
+    assert.ok(text.length > 12, `${cls} 的说明太短：${text}`);
+    assert.doesNotMatch(text, /^有风险$/);
+  }
+  assert.match(describeRisk({ riskClass: 'publish', risk: 0.6 }), /别人能看到/);
+  assert.match(describeRisk({ riskClass: 'install', risk: 0.6 }), /装坏/);
+  assert.match(describeRisk({ riskClass: 'contact', risk: 0.6 }), /以你的身份/);
+  assert.match(describeRisk({ riskClass: 'write_outside', risk: 0.6 }), /工作区以外/);
+});
+
+test('describeRisk 遇到没见过的类别按有风险处理', () => {
+  const text = describeRisk({ riskClass: '胡说八道', risk: 0.9 });
+  assert.match(text, /不确定/);
+  assert.match(text, /0.9/);
 });
 
 test('IntentExecutor 没有 createWorker 时拒跑', async () => {

@@ -110,6 +110,29 @@ export function buildWorkerPrompt(chosen, { nowIso = new Date().toISOString(), m
 }
 
 /**
+ * 把风险类别翻成「可能发生什么」。
+ *
+ * 给 buildAskPrompt 用：风险不够低的时候，光说「有点风险」没用，
+ * 得说清楚具体会碰到什么，她才能判断要不要放行。
+ */
+export function describeRisk(chosen) {
+  const riskClass = typeof chosen?.riskClass === 'string' && chosen.riskClass !== '' ? chosen.riskClass : 'read';
+  const risk = Number(chosen?.risk ?? 0);
+  const notes = {
+    read: '不会改任何东西，只是看一看、查一查。',
+    research: '会上网查资料，不会改本地文件，也不会对外发言。',
+    write_workspace: '会在工作区里新建或修改文件。改错了能回退，但会覆盖当前内容。',
+    write_outside: '会写工作区以外的文件。碰到系统目录或别的项目的文件，可能删掉或改坏东西。',
+    publish: '会发表出去，别人能看到。发出去就收不回来，就算删了也可能已经被截图或转载。',
+    install: '会在机器上装东西或改依赖。可能装坏现有环境，也可能占掉本来就紧张的内存和硬盘。',
+    contact: '会以你的身份跟别人说话。对方会当成是你说的，收不回来。'
+  };
+  const lines = [notes[riskClass] ?? '这类动作我还不确定会碰到什么，按有风险处理。'];
+  if (risk >= 0.5) lines.push(`风险打分 ${risk.toFixed(2)}，偏高。`);
+  return lines.join('');
+}
+
+/**
  * 念头够格、但动手那层关着时，投给自己的一条提示。
  *
  * 注意它不是「发给沫沫的文案」——它进的是我的上下文，由我在那个回合里
@@ -117,17 +140,27 @@ export function buildWorkerPrompt(chosen, { nowIso = new Date().toISOString(), m
  */
 export function buildAskPrompt(chosen, { nowIso = new Date().toISOString() } = {}) {
   const kindLabel = { question: '疑问', unfinished: '没做完的事', whim: '一闪而过的念头', wish: '想做但还做不了的' }[chosen.kind] ?? '念头';
-  return [
+  const riskClass = typeof chosen.riskClass === 'string' && chosen.riskClass !== '' ? chosen.riskClass : 'read';
+  const risky = Number(chosen.risk ?? 0) >= 0.5 || !SAFE_RISK_CLASSES.includes(riskClass);
+  const lines = [
     `[念头] ${nowIso}`,
     '',
     `你自己账本上有一条${kindLabel}，分数够了：`,
     `「${chosen.text}」`,
-    `打分 ${Number(chosen.score ?? 0).toFixed(2)}，风险 ${(Number(chosen.risk ?? 0)).toFixed(2)}（${chosen.riskClass ?? 'read'}）。`,
+    `打分 ${Number(chosen.score ?? 0).toFixed(2)}，风险 ${(Number(chosen.risk ?? 0)).toFixed(2)}（${riskClass}）。`,
     '',
     '动手那层还关着，所以这次不能直接做。',
-    '用你自己的话跟她说一句：这条你想去做，问她要不要放你去做。别念分数、别提插件或账本这些词，就像平时说话那样。',
-    '她答应了你再动手，没答应就先放着。'
-  ].join('\n');
+    '用你自己的话跟她说一句：这条你想去做，问她要不要放你去做。别念分数、别提插件或账本这些词，就像平时说话那样。'
+  ];
+  if (risky) {
+    lines.push(
+      '',
+      '这条风险不低，说的时候务必把可能发生什么讲清楚（用她听得懂的话，别只说「有风险」）：',
+      describeRisk(chosen)
+    );
+  }
+  lines.push('', '她答应了你再动手，没答应就先放着。');
+  return lines.join('\n');
 }
 
 /**
