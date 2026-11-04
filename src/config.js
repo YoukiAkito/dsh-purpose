@@ -75,6 +75,21 @@ export const DEFAULT_CONFIG = {
       /** 允许自动执行的风险类别；不在表里的一律只报告。 */
       allowedRiskClasses: ['read', 'research', 'write_workspace']
     }
+  },
+  /**
+   * 外部素材源：自己出去看一眼（B站热搜 / 热门视频）。
+   *
+   * 不按定时，按好奇心：好奇值涨过 threshold 才出去，看完落 glance.jsonl
+   * 并把好奇心压下去。gapMinutes 是防抖，防止阈值附近反复触发。
+   */
+  external: {
+    enabled: true,
+    /** 好奇心低于此值就不出门。 */
+    threshold: 0.55,
+    /** 两次出门至少隔多少分钟。 */
+    gapMinutes: 90,
+    /** bili CLI 路径；留空自动找。 */
+    biliCli: ''
   }
 };
 
@@ -155,6 +170,7 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
 
   const confidence = file.confidence && typeof file.confidence === 'object' ? file.confidence : {};
   const intent = file.intent && typeof file.intent === 'object' ? file.intent : {};
+  const external = file.external && typeof file.external === 'object' ? file.external : {};
 
   return {
     enabled: typeof file.enabled === 'boolean' ? file.enabled : env.DSH_PURPOSE_ENABLED !== '0',
@@ -207,6 +223,12 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
       sessionId: typeof file.target?.sessionId === 'string'
         ? file.target.sessionId
         : env.DSH_PURPOSE_TARGET ?? ''
+    },
+    external: {
+      enabled: typeof external.enabled === 'boolean' ? external.enabled : DEFAULT_CONFIG.external.enabled,
+      threshold: floatOf(external.threshold, DEFAULT_CONFIG.external.threshold, 0, 1),
+      gapMinutes: intOf(external.gapMinutes, DEFAULT_CONFIG.external.gapMinutes, 5, 1440),
+      biliCli: typeof external.biliCli === 'string' ? external.biliCli : DEFAULT_CONFIG.external.biliCli
     }
   };
 }

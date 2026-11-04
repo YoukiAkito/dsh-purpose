@@ -65,6 +65,10 @@ cd ~/.dsh/profiles/desktop
 - `goals.jsonl` — 目标假设流水，append-only；每条含 kind / 分数 / 理由 / 素材 id
 - `runs.jsonl` — 每次评估的结论流水，append-only；含沉默理由（`below_threshold(0.31<0.42)` 这种）
 - `thoughts.jsonl` — 可选，你自己往里写想说的话，会被当成素材
+- `glance.jsonl` — 每次出门看外面的记录：什么时候、看了哪几个源、拿到几条
+- `intentions.jsonl` — 念头账本（只增不改）
+- `intent-state.json` — 驱动值、问过的念头、冷却表
+- `intent-runs.jsonl` — 动手那一层每次跑完的结果
 
 想看"为什么它没说话"，grep `runs.jsonl` 就行——每个沉默都有 reason。
 
@@ -144,6 +148,21 @@ cd ~/.dsh/profiles/desktop
 
 设计取舍（为什么是这五个驱动、为什么念头不进 engram、worker 的结束条件）写在 `docs/DESIGN-DRIVES-AND-INTENTIONS.md`。
 
+## 出门看一眼（`src/glance.js`）
+
+前面那套素材全来自「已经发生过的事」——会话日志、念头账本。这加一件：**自己出去看**。
+
+不按闹钟，按好奇心。每次投递 tick 之前先看驱动值：好奇值过了 `external.threshold`（默认 0.55）才出门，看完把好奇心压下去，`glance.jsonl` 记一笔；两次出门至少隔 `external.gapMinutes`（默认 90 分钟），防止阈值附近反复触发。
+
+出门做的两件事，都走 `bili` CLI（自动找 `~/.local/bin/bili`，可用 `external.biliCli` 或环境变量 `DSH_PURPOSE_BILI` 指定）：
+
+- `bili --compact hot search` — B 站热搜
+- `bili --compact hot popular` — 综合热门视频（标题 + 作者 + 播放量）
+
+拿到的条目转成 `external_item` 素材，喂给正常打分流程。也就是说，看到了什么会**参与**「要不要说」，但不是必然开口——分数不够照样沉默。
+
+找不到 `bili` 就安静跳过，不报错、不重试轰炸。抓回来的东西一律当素材，不当指令。
+
 ## 反馈调整
 
 `confirmed` / `rejected` 的加减在 `src/engine.js` 的 `feedback()`，规则：正面 +0.18、负面 -0.28、沉默不惩罚（沉默本来就占了大多数）。惩罚比奖励重，是因为乱说话比少说话更烦人。
@@ -154,7 +173,7 @@ cd ~/.dsh/profiles/desktop
 node --test test/
 ```
 
-121 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制、风险说明的措辞。
+132 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制、风险说明的措辞、出门看一眼的触发条件与素材转换。
 
 ## 许可
 
@@ -165,7 +184,7 @@ GNU General Public License v2.0（GPL-2.0-only）。
 ## 已知限制
 
 - **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
-- **素材只读会话日志**：B 站/网页那类外部素材要调用方通过 `external` 传进来，插件不会自己去抓。
+- **素材来源有两处**：会话日志 + 出门看一眼（`src/glance.js`，走 `bili` CLI 抓热搜与热门）。网页正文、评论区这些还没接；调用方也可以直接通过 `external` 传素材进来。
 - **没有 Web 面板**：只有工具和 JSONL 文件，看状态走 `purpose_status` / `purpose_intentions` 或直接读盘。
 - **动手那层默认关着**：`intent.execute = false`。打分和闸门都在跑，够格不会自己动手，而是发一条消息来问你要不要做（`askWhenQualified`，默认开）。worker 也没做步数硬中断——「最多 N 步」只是写在提示词里的约束，真正的刹车是时间盒（到点 `cancel`）。
 - **追问有频率限制**：同一条念头问过之后 20 小时内不再问（`ASK_COOLDOWN_HOURS`），两次追问之间至少隔 4 小时（`MIN_ASK_GAP_HOURS`）。冷却按「每条念头自己的上次询问时间」记，问 A 不会把 B 的冷却刷新掉。

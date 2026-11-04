@@ -22,6 +22,7 @@ import { registerPurposeTools } from './tools.js';
 import { IntentRuntime } from './intent-runtime.js';
 import { IntentExecutor, resolveWorkerConfig, buildAskPrompt } from './intent-worker.js';
 import { describeDrives } from './drives.js';
+import { findBiliCli, glance, shouldGlance, recordGlance, lastGlanceAt } from './glance.js';
 import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
 import { readJson, readJsonl, writeJsonAtomic, toIso } from './util.js';
 
@@ -65,6 +66,10 @@ export async function apply(ctx) {
   intent.load(log);
   /** 下一次念头评估的时刻（毫秒）；null = 未安排。 */
   let intentNextAt = null;
+
+  /** 外部素材：出去的记录落在 glance.jsonl，用它算上次出门是多久前。 */
+  const glancePath = join(config.dataDir, 'glance.jsonl');
+  const biliCli = findBiliCli({ DSH_PURPOSE_BILI: config.external.biliCli });
 
   // 目标会话：config.json 里的 target.sessionId 优先，否则用当前 root agent。
   const targetSessionId = typeof config.target?.sessionId === 'string' ? config.target.sessionId : '';
@@ -238,13 +243,43 @@ export async function apply(ctx) {
     if (stopped || running) return;
     running = true;
     try {
+      // 出门看一眼：不看闹钟，看好奇心涨到哪儿了。
+      // 看完把好奇心压下去，省得下一个 tick 又想出去。
+      let external = [];
+      if (config.external.enabled && biliCli !== '') {
+        try {
+          intent.advanceDrives(Date.now());
+          const verdict = shouldGlance(intent.state.drives, {
+            lastGlanceAt: lastGlanceAt(glancePath),
+            now: Date.now(),
+            threshold: config.external.threshold,
+            gapMs: config.external.gapMinutes * 60_000
+          });
+          if (verdict.glance) {
+            const seen = await glance({ cli: biliCli, log });
+            external = seen.materials;
+            recordGlance(glancePath, { materials: seen.materials, sources: seen.sources, at: Date.now() });
+            if (seen.materials.length > 0) {
+              intent.satisfy('curiosity', 1);
+              intent.persist();
+              log('info', `[glance] 出去看了一眼：${seen.sources.join('+')}，${seen.materials.length} 条`);
+            }
+          } else {
+            log('info', `[glance] 没出去：${verdict.reason}`);
+          }
+        } catch (error) {
+          log('warn', `[glance] 出门失败：${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+
       const result = await withTimeout(runTick({
         store,
         config,
         deliver,
         log,
         sessionLogPath: sessionLogPathOf(ctx, targetSessionId, join(config.dataDir, 'logcache'), log),
-        thoughtsPath: join(config.dataDir, 'thoughts.jsonl')
+        thoughtsPath: join(config.dataDir, 'thoughts.jsonl'),
+        external
       }), TICK_TIMEOUT_MS);
       if (result?.nextAt !== undefined) store.state.nextAt = result.nextAt;
       const nextAtMs = Date.parse(store.state.nextAt);
