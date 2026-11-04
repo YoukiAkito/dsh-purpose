@@ -154,6 +154,8 @@ cd ~/.dsh/profiles/desktop
 
 不按闹钟，按好奇心。每次投递 tick 之前先看驱动值：好奇值过了 `external.threshold`（默认 0.55）才出门，看完把好奇心压下去，`glance.jsonl` 记一笔；两次出门至少隔 `external.gapMinutes`（默认 90 分钟），防止阈值附近反复触发。
 
+**安静时段不出门**：素材抓回来也会被 tick 的安静闸门丢掉，跑一趟纯属白费（好奇心还白降），所以 `quietHours` 内直接记 `[glance] 没出去：quiet_hours` 跳过。
+
 出门做的两件事，都走 `bili` CLI（自动找 `~/.local/bin/bili`，可用 `external.biliCli` 或环境变量 `DSH_PURPOSE_BILI` 指定）：
 
 - `bili --compact hot search` — B 站热搜
