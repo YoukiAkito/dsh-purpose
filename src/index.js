@@ -20,9 +20,10 @@ import { PurposeStore } from './store.js';
 import { tick as runTick, nextGapMs } from './engine.js';
 import { registerPurposeTools } from './tools.js';
 import { IntentRuntime } from './intent-runtime.js';
+import { IntentExecutor, resolveWorkerConfig } from './intent-worker.js';
 import { describeDrives } from './drives.js';
 import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
-import { readJson, writeJsonAtomic, toIso } from './util.js';
+import { readJson, readJsonl, writeJsonAtomic, toIso } from './util.js';
 
 export const name = 'dsh-purpose';
 export const inject = ['agents', 'tools', 'sessionPersistence'];
@@ -289,6 +290,11 @@ export async function apply(ctx) {
       const result = intent.ledger.add(input);
       log('info', `[念头] 记下：${input.text.slice(0, 40)}${result.merged ? '（合并）' : ''}`);
       return result;
+    },
+    /** 看念头动过手之后的记录（最近 N 条，倒序）。文件不存在就是空。 */
+    runs: (limit = 10) => {
+      const rows = readJsonl(join(config.dataDir, 'intent-runs.jsonl'), Math.max(1, Math.min(200, Number(limit) || 10)));
+      return rows.reverse();
     }
   };
   const registerOne = (agent) => {
@@ -317,14 +323,91 @@ export async function apply(ctx) {
   log('info', `started: dataDir=${config.dataDir} target=${targetSessionId || '（未配置）'} gap=${config.minGapSeconds}~${config.maxGapSeconds}s quiet=${config.quietHours.start}-${config.quietHours.end}`);
   schedule(firstDelay);
 
-  // ── 念头机制：驱动 + 账本 + 打分。第一步只记日志，不投递、不开 worker。
+  // ── 念头机制：驱动 + 账本 + 打分，够了才动手。
+  //
+  // 两层闸门：
+  //   1. config.intent.execute —— 总闸，默认 false，只有沫沫点头才开
+  //   2. intent-worker.js 里的 shouldExecute —— 分数要过自主阈值、风险类别要在白名单里
+  // 任何一边不放行，都只写日志、报告，不动手。
+  const workerConfig = resolveWorkerConfig(config.intent.worker);
+
+  /**
+   * 开一个独立会话干活。
+   *
+   * 用 ctx.agents.create 而不是往当前会话塞 followup：worker 有自己的一次性会话，
+   * 干完就 dispose，不污染主对话，也不会把结果当成用户消息发出去。
+   *
+   * 拿不到默认模型就直接失败——宁可这次不动手，也不要瞎猜一个模型名。
+   */
+  const createWorker = async ({ prompt, maxSteps, timeBoxMs }) => {
+    const defaultModel = ctx.get('agentDefaultModel', false);
+    const selection = typeof defaultModel?.currentSelection === 'function'
+      ? defaultModel.currentSelection()
+      : undefined;
+    if (selection === undefined || selection === null || typeof selection.provider !== 'string' || typeof selection.model !== 'string') {
+      throw new Error('拿不到默认模型选择，跳过这次动手');
+    }
+
+    const presets = ctx.get('agentPresets', false);
+    const handle = await ctx.agents.create({
+      agentOptions: {
+        provider: selection.provider,
+        model: selection.model,
+        ...(typeof selection.reasoningEffort === 'string' ? { reasoningEffort: selection.reasoningEffort } : {})
+      },
+      setup: async (agentCtx) => {
+        // 跟主会话一样：不 mount preset 就只有 host-plane 工具，read/write 全报 unknown。
+        if (presets === undefined || typeof presets.mount !== 'function') return;
+        if (typeof config.intent.workerPreset === 'string' && config.intent.workerPreset !== '') {
+          await presets.mount(agentCtx, config.intent.workerPreset);
+        }
+      },
+      meta: { origin: 'dsh-purpose', maxSteps }
+    });
+
+    try {
+      handle.agent.followup({
+        content: [{ type: 'text', text: prompt }],
+        source: { kind: 'plugin:dsh-purpose' }
+      });
+      const timer = setTimeout(() => {
+        try {
+          handle.agent.cancel?.('time-box');
+        } catch {
+          // 取消失败无所谓，下面 whenIdle 会等它自己停。
+        }
+      }, Math.max(10_000, Number(timeBoxMs) || 600_000));
+      if (typeof timer.unref === 'function') timer.unref();
+      try {
+        await handle.agent.whenIdle();
+      } finally {
+        clearTimeout(timer);
+      }
+      return { text: '', steps: 0 };
+    } finally {
+      try {
+        handle.dispose?.();
+      } catch {
+        // 释放失败不影响记账。
+      }
+    }
+  };
+
+  const executor = new IntentExecutor({
+    createWorker,
+    runsPath: join(config.dataDir, 'intent-runs.jsonl'),
+    log
+  });
+
+  /** 念头评估的定时器与串行锁（跟投递心跳那套分开，互不阻塞）。 */
   let intentTimer = null;
   let intentRunning = false;
-  const intentTick = () => {
+
+  const intentTick = async () => {
     if (stopped || intentRunning) return;
     intentRunning = true;
     try {
-      intent.evaluate({
+      const result = intent.evaluate({
         config: {
           minTension: config.intent.minTension,
           intentThreshold: config.intent.threshold,
@@ -334,6 +417,19 @@ export async function apply(ctx) {
         wakeupsLastHour: store.wakeupsLastHour(Date.now()),
         maxWakeupsPerHour: config.maxWakeupsPerHour
       });
+
+      // 只有「决定动手」+「总闸开着」才往下走；其余情况 evaluate 已经记好日志了。
+      if (result?.decision === 'act' && result.chosen !== null && config.intent.execute) {
+        const outcome = await executor.run(result.chosen, {
+          workerConfig,
+          autonomousThreshold: config.intent.autonomousThreshold,
+          workspaceRoot: process.cwd()
+        });
+        intent.settle(result, outcome);
+        log('info', `[念头] ${outcome.ok === true ? '做完' : '没做成'}：${result.chosen.text.slice(0, 30)}`);
+      } else if (result?.decision === 'act' && result.chosen !== null) {
+        log('info', `[念头] 够格动手但 execute=off，只报告：${result.chosen.text.slice(0, 30)}`);
+      }
     } catch (error) {
       log('warn', `念头评估失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -342,7 +438,7 @@ export async function apply(ctx) {
         intentNextAt = Date.now() + config.intent.tickSeconds * 1000;
         intentTimer = setTimeout(() => {
           intentTimer = null;
-          intentTick();
+          void intentTick();
         }, config.intent.tickSeconds * 1000);
         if (typeof intentTimer.unref === 'function') intentTimer.unref();
       }
@@ -352,7 +448,7 @@ export async function apply(ctx) {
     intentNextAt = Date.now() + config.intent.tickSeconds * 1000;
     intentTimer = setTimeout(() => {
       intentTimer = null;
-      intentTick();
+      void intentTick();
     }, config.intent.tickSeconds * 1000);
     if (typeof intentTimer.unref === 'function') intentTimer.unref();
     log('info', `念头机制已启动：每 ${config.intent.tickSeconds}s 评估一次，execute=${config.intent.execute ? 'on' : 'off（只记日志）'}`);

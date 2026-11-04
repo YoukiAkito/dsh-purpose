@@ -117,8 +117,10 @@ export class IntentRuntime {
         id: picked.chosen.id,
         text: picked.chosen.text,
         kind: picked.chosen.kind,
+        drive: picked.chosen.drive ?? '',
         score: Number(picked.chosen.score.toFixed(3)),
-        risk: picked.chosen.risk
+        risk: picked.chosen.risk,
+        riskClass: picked.chosen.riskClass ?? 'read'
       },
       ranked: picked.ranked.slice(0, 5).map((c) => ({
         id: c.id,
@@ -133,12 +135,45 @@ export class IntentRuntime {
     }
     this.#remember(result, now);
 
-    // 第一步：只记日志。真开 worker 是下一步的事。
+    // 第二步：这里只把结论返回给调用方（index.js），由它决定要不要开 worker。
+    // 评估本身保持纯函数性：读驱动、读账本、打分、记账，不动手、不起进程。
     const head = result.chosen === null
       ? `[念头] ${result.decision}：${result.reason}`
       : `[念头] ${result.decision}：${result.chosen.kind} ${result.chosen.text.slice(0, 40)}（${result.chosen.score}）`;
     log('info', `${head} / ${result.drives}`);
     return result;
+  }
+
+  /**
+   * 某个念头动过手之后收尾：记账 + 让对应驱动回落。
+   *
+   * 单独一个方法而不是塞进 evaluate，是为了让「评估」和「动手的结果」解耦：
+   * 以后换成别的执行通道，只要最后调它一次就行。
+   *
+   * @param {object} result  evaluate() 的返回值
+   * @param {object} outcome run() 的返回值（ok / skipped / error）
+   */
+  settle(result, outcome = {}) {
+    const chosen = result?.chosen ?? null;
+    if (chosen === null) return this.state;
+    const drive = typeof chosen.drive === 'string' && chosen.drive !== '' ? chosen.drive : '';
+    if (drive !== '') {
+      // 动手成功才算满足；失败不倒扣，但也不给奖励，下次还会再冒出来。
+      const strength = outcome.ok === true ? 1 : 0.35;
+      this.satisfy(drive, strength);
+    }
+    const entry = {
+      at: new Date().toISOString(),
+      intentionId: chosen.id,
+      decision: result?.decision ?? '',
+      ok: outcome.ok === true,
+      skipped: outcome.skipped === true,
+      reason: outcome.reason ?? outcome.error ?? ''
+    };
+    this.state.recentIntentionIds = [...this.state.recentIntentionIds, chosen.id].slice(-MAX_RECENT);
+    this.state.lastDecision = `${entry.decision}/${entry.ok ? 'done' : entry.skipped ? 'skipped' : 'failed'}`;
+    this.persist();
+    return { ...this.state, lastSettle: entry };
   }
 
   #remember(result, now) {

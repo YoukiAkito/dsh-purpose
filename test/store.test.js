@@ -166,13 +166,15 @@ test('resolveConfig 对坏配置做钳制而不是抛错', () => {
 
 test('tick 在日预算用尽时直接沉默', async () => {
   const { dir, store } = tempStore();
-  store.state.day = localDayKey(Date.now());
+  // 用跟 tick 同一个 now 算 day key，否则跑测试的当天一变就跟着坏。
+  const now = Date.parse('2026-11-03T12:00:00+08:00');
+  store.state.day = localDayKey(now);
   store.state.deliveredToday = 1;
   const result = await tick({
     store,
     config: { ...DEFAULT_CONFIG, maxDeliveriesPerDay: 1, quietHours: { start: '00:00', end: '00:00', timeZone: '' } },
     deliver: async () => 'sent',
-    now: () => Date.parse('2026-11-03T12:00:00+08:00'),
+    now: () => now,
     log: () => {}
   });
   assert.equal(result.decision, 'silent');

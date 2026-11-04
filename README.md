@@ -91,10 +91,11 @@ cd ~/.dsh/profiles/desktop
 - `purpose_reclaim` — 这一轮不打算开口，记下理由安静收手
 - `purpose_settings` — 改间隔 / 阈值 / 日上限 / 安静时段
 
-念头机制另外两个：
+念头机制另外三个：
 
 - `purpose_intentions` — 看念头账本（我攒下的"想做什么"）
 - `purpose_note` — 往账本里记一条
+- `purpose_runs` — 看念头真动过手之后的记录（哪条、多久、成没成）
 
 ## 念头机制：自己想做什么
 
@@ -107,7 +108,16 @@ cd ~/.dsh/profiles/desktop
 3. **打分**（`src/intent-engine.js`）——`score = 0.34*value + 0.26*urgency + 0.18*freshness + 0.12*driveMatch + 0.10*(1-risk)`。低于 0.45 不做；达到 0.62 且 `risk < 0.5` 才允许不经确认开干；其余一律降级成「提议」。
 4. **运行时**（`src/intent-runtime.js`）——把上面三样串起来，状态落 `intent-state.json`。
 
-**当前只到第一步：`intent.execute = false`，只写日志、不开 worker、不发消息。** 目的是先攒几天日志，看冒出来的念头像不像自己，再决定要不要真放它去动手。
+### 动手那一层（`src/intent-worker.js`）
+
+分数够了不等于可以乱来，还有两道闸：
+
+- **总闸** `intent.execute`，默认 `false`。关着的时候，即便念头过了 0.62，也只写一行日志告诉你「够格但我没动」。
+- **风险闸** `shouldExecute()`：分数要过自主阈值、`risk < 0.5`、风险类别要在白名单里。白名单只收 `read` / `research` / `write_workspace`；`write_outside` / `publish` / `install` / `contact` 四类**写死在代码里永不自动执行**，配置文件里显式加上也会被 `resolveWorkerConfig()` 过滤掉——这是设计上不开放的，不是配置能打开的开关。
+
+真动手时开一个**独立的一次性会话**（`ctx.agents.create`），不是往主对话塞 followup：worker 有自己的会话，干完就 `dispose`，不污染主对话，也不会把结果当成用户消息发出去。提示词里写死三条：只做这一件事、不对外发任何东西、做完不要向任何人汇报。跑完记一条到 `intent-runs.jsonl`，用 `purpose_runs` 工具看。
+
+要接别的执行通道（MCP、独立进程）只需实现 `IntentExecutor` 认的 `createWorker(job)`，其余不动。
 
 配置在 `config.json` 的 `intent` 段：
 
@@ -119,7 +129,13 @@ cd ~/.dsh/profiles/desktop
     "minTension": 0.3,
     "threshold": 0.45,
     "autonomousThreshold": 0.62,
-    "execute": false
+    "execute": false,
+    "workerPreset": "",
+    "worker": {
+      "maxSteps": 12,
+      "timeBoxMs": 600000,
+      "allowedRiskClasses": ["read", "research", "write_workspace"]
+    }
   }
 }
 ```
@@ -136,7 +152,7 @@ cd ~/.dsh/profiles/desktop
 node --test test/
 ```
 
-89 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级。
+106 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛。
 
 ## 许可
 
@@ -149,7 +165,7 @@ GNU General Public License v2.0（GPL-2.0-only）。
 - **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
 - **素材只读会话日志**：B 站/网页那类外部素材要调用方通过 `external` 传进来，插件不会自己去抓。
 - **没有 Web 面板**：只有工具和 JSONL 文件，看状态走 `purpose_status` / `purpose_intentions` 或直接读盘。
-- **念头机制只到第一步**：驱动、账本、打分都在跑，但 `intent.execute = false`，评估结果只进日志，不开 worker、不发消息。
+- **动手那层默认关着**：`intent.execute = false`。打分和闸门都在跑，够格也只写日志，要显式打开才会开 worker 会话。worker 也没做步数硬中断——「最多 N 步」只是写在提示词里的约束，真正的刹车是时间盒（到点 `cancel`）。
 
 ## 读会话日志的两个坑（都踩过，写下来省得再踩）
 

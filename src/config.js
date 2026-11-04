@@ -43,7 +43,7 @@ export const DEFAULT_CONFIG = {
   maxMaterials: 24,
   /** 提示词里每条素材最长多少字符。 */
   maxMaterialChars: 220,
-  /** 念头机制：驱动 + 账本 + 打分。第一步只记日志，不开 worker。 */
+  /** 念头机制：驱动 + 账本 + 打分 + 够格才动手。 */
   intent: {
     enabled: true,
     /** 每多少秒评估一次念头（独立于上面的投递节奏）。 */
@@ -54,8 +54,22 @@ export const DEFAULT_CONFIG = {
     threshold: 0.45,
     /** 高于此值且风险低才可直接动手。 */
     autonomousThreshold: 0.62,
-    /** 是否真的开 worker 会话（false = 只写日志，第一步的默认）。 */
-    execute: false
+    /** 总闸：false = 即便够格也只写日志，真开 worker 要它点头。 */
+    execute: false,
+    /** worker 会话挂哪个人设；留空 = 不挂（只有 host-plane 工具）。 */
+    workerPreset: '',
+    /**
+     * worker 层的可调参数。跟 execute 分开放：execute 是总闸，
+     * 这里是闸门后面的细节，方便以后接别的执行通道时只改这一块。
+     */
+    worker: {
+      /** 单次任务最多几步。 */
+      maxSteps: 12,
+      /** 单次任务最长跑多久（毫秒）。 */
+      timeBoxMs: 600000,
+      /** 允许自动执行的风险类别；不在表里的一律只报告。 */
+      allowedRiskClasses: ['read', 'research', 'write_workspace']
+    }
   }
 };
 
@@ -172,7 +186,15 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
       minTension: floatOf(intent.minTension, DEFAULT_CONFIG.intent.minTension, 0, 1),
       threshold: floatOf(intent.threshold, DEFAULT_CONFIG.intent.threshold, 0, 1),
       autonomousThreshold: floatOf(intent.autonomousThreshold, DEFAULT_CONFIG.intent.autonomousThreshold, 0, 1),
-      execute: typeof intent.execute === 'boolean' ? intent.execute : DEFAULT_CONFIG.intent.execute
+      execute: typeof intent.execute === 'boolean' ? intent.execute : DEFAULT_CONFIG.intent.execute,
+      workerPreset: typeof intent.workerPreset === 'string' ? intent.workerPreset : DEFAULT_CONFIG.intent.workerPreset,
+      worker: {
+        maxSteps: intOf(intent.worker?.maxSteps, DEFAULT_CONFIG.intent.worker.maxSteps, 1, 60),
+        timeBoxMs: intOf(intent.worker?.timeBoxMs, DEFAULT_CONFIG.intent.worker.timeBoxMs, 10_000, 3_600_000),
+        allowedRiskClasses: Array.isArray(intent.worker?.allowedRiskClasses) && intent.worker.allowedRiskClasses.length > 0
+          ? intent.worker.allowedRiskClasses.filter((k) => typeof k === 'string')
+          : [...DEFAULT_CONFIG.intent.worker.allowedRiskClasses]
+      }
     },
     // 目标会话：没配就什么都不投（宁可不动，也不要瞎猜一个会话塞进去）。
     target: {

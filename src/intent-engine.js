@@ -49,7 +49,8 @@ export function buildCandidates(intentions, drives, { now = Date.now(), recentIn
     const freshness = recent.has(item.id) ? 0 : 1;
     const driveKey = DRIVES.includes(item.drive) ? item.drive : '';
     const driveMatch = driveKey === '' ? 0.5 : clamp01(drives[driveKey] ?? 0);
-    const risk = RISK[item.riskClass] ?? RISK.read;
+    const riskClass = typeof item.riskClass === 'string' && item.riskClass !== '' ? item.riskClass : 'read';
+    const risk = RISK[riskClass] ?? RISK.read;
     out.push({
       id: item.id,
       text: item.text,
@@ -60,6 +61,7 @@ export function buildCandidates(intentions, drives, { now = Date.now(), recentIn
       freshness,
       driveMatch,
       risk,
+      riskClass,
       score: scoreCandidate({ value, urgency, freshness, driveMatch, risk }),
       attempts: Number(item.attempts) || 0
     });

@@ -278,6 +278,47 @@ export function registerPurposeTools(agentCtx, agent, service) {
     presentCall: () => ({ type: 'text', text: '记一条念头' })
   }));
 
+  add(defineTool({
+    name: 'purpose_runs',
+    description: '看念头动过手之后的记录：哪条念头、什么时候、跑了多久、成没成。只在想看"我真的动过什么手"时用。',
+    parameters: {
+      limit: { type: 'integer', description: '看最近几条，默认 10，最多 200。' }
+    },
+    output: {
+      schema: {
+        oneOf: [{
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            count: { type: 'integer', required: true },
+            items: { type: 'string', required: true }
+          }
+        }, ERROR_SCHEMA]
+      },
+      render: renderValue
+    },
+    async execute(args, exec) {
+      if (exec.agent !== agent) return internalError();
+      if (typeof service.runs !== 'function') {
+        return { code: 'unavailable', message: '这个版本没有记录执行结果。' };
+      }
+      const limit = Number.isFinite(args['limit']) ? args['limit'] : 10;
+      let rows;
+      try {
+        rows = service.runs(limit);
+      } catch (error) {
+        return { code: 'invalid_args', message: error instanceof Error ? error.message : String(error) };
+      }
+      const items = rows.map((row) => {
+        const head = `${row.at ?? ''} ${row.kind ?? ''} ${String(row.text ?? '').slice(0, 40)}`;
+        const tail = `${row.ok === true ? '成' : '败'} ${row.tookMs ?? 0}ms${row.error !== undefined ? ` / ${row.error}` : ''}`;
+        return `${head} → ${tail}`;
+      }).join('\n');
+      return { count: rows.length, items: items === '' ? '（还没动过手）' : items };
+    },
+    presentCall: () => ({ type: 'text', text: '看执行记录' })
+  }));
+
   return () => {
     for (const dispose of disposers) {
       try {
