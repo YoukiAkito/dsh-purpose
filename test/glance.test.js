@@ -12,7 +12,8 @@ import {
   materialsFromPopular,
   materialsFromVtuberClips,
   recordGlance,
-  shouldGlance
+  shouldGlance,
+  topicQueries
 } from '../src/glance.js';
 
 function tmp() {
@@ -88,7 +89,7 @@ test('没有 cli 就不走路，也不抛', async () => {
   assert.deepEqual(seen, { materials: [], sources: [] });
 });
 
-test('跑三条命令并把素材合起来', async () => {
+test('跑默认三路命令并把素材合起来', async () => {
   const calls = [];
   const run = async (cli, args) => {
     calls.push(args.join(' '));
@@ -101,6 +102,59 @@ test('跑三条命令并把素材合起来', async () => {
   assert.equal(seen.materials.length, 3);
   assert.deepEqual(seen.sources, ['hot', 'popular', 'vtuber']);
   assert.deepEqual(calls, ['hot search', 'hot popular', 'search video 虚拟主播 切片 --order views --size 10']);
+});
+
+test('lane 由配置决定：给什么就跑什么，不再写死', async () => {
+  const calls = [];
+  const run = async (cli, args) => {
+    calls.push(args.join(' '));
+    return { items: [{ bvid: 'BV1', title: '猫片一' }] };
+  };
+  const lanes = [{ id: 'cats', label: '猫片', args: ['search', 'video', '猫'], format: 'video', prefix: '猫片' }];
+  const seen = await glance({ cli: '/fake/bili', run, now: 1, lanes });
+  assert.deepEqual(calls, ['search video 猫']);
+  assert.deepEqual(seen.sources, ['cats']);
+  assert.equal(seen.materials[0].text, '猫片：猫片一');
+  assert.equal(seen.materials[0].source, 'bili-cats');
+});
+
+test('lanes 为空数组就什么都不跑', async () => {
+  let called = 0;
+  const run = async () => { called += 1; return null; };
+  const seen = await glance({ cli: '/fake/bili', run, lanes: [] });
+  assert.equal(called, 0);
+  assert.deepEqual(seen.sources, []);
+});
+
+test('念头里的问题会变成搜索词', async () => {
+  const calls = [];
+  const run = async (cli, args) => {
+    calls.push(args.join(' '));
+    return { items: [{ bvid: 'BV1', title: '答案在这' }] };
+  };
+  const seen = await glance({
+    cli: '/fake/bili',
+    run,
+    now: 1,
+    lanes: [],
+    topics: { queries: ['TTS 为什么慢'], order: 'views', size: 8 }
+  });
+  assert.deepEqual(calls, ['search video TTS 为什么慢 --order views --size 8']);
+  assert.deepEqual(seen.sources, ['topic:TTS 为什么慢']);
+  assert.equal(seen.materials[0].text, '搜「TTS 为什么慢」：答案在这');
+});
+
+test('topicQueries 只取 question 类、去重、截断', () => {
+  const rows = [
+    { kind: 'unfinished', status: 'open', text: '把第二步做完' },
+    { kind: 'question', status: 'open', text: '为什么显卡会降频？' },
+    { kind: 'question', status: 'open', text: '为什么显卡会降频？' },
+    { kind: 'question', status: 'open', text: 'TTS：到底该不该换音色' },
+    { kind: 'question', status: 'open', text: '这句子特别特别特别特别特别特别特别特别特别长的东西' },
+    { kind: 'question', status: 'done', text: '已经想明白的事' }
+  ];
+  const q = topicQueries(rows, { limit: 3 });
+  assert.deepEqual(q, ['为什么显卡会降频', 'TTS', '这句子特别特别特别特别特别特别特别特别特别长的东']);
 });
 
 test('三条都失败时记一条警告', async () => {

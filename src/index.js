@@ -15,14 +15,14 @@
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { resolveConfig, isInQuietHours, localZoneOffsetMinutes, parseClock } from './config.js';
+import { resolveConfig, isInQuietHours, localZoneOffsetMinutes, parseClock, resolveLane } from './config.js';
 import { PurposeStore } from './store.js';
 import { tick as runTick, nextGapMs } from './engine.js';
 import { registerPurposeTools } from './tools.js';
 import { IntentRuntime } from './intent-runtime.js';
 import { IntentExecutor, resolveWorkerConfig, buildAskPrompt } from './intent-worker.js';
 import { describeDrives } from './drives.js';
-import { findBiliCli, glance, shouldGlance, recordGlance, lastGlanceAt } from './glance.js';
+import { findBiliCli, glance, shouldGlance, recordGlance, lastGlanceAt, topicQueries } from './glance.js';
 import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
 import { readJson, readJsonl, writeJsonAtomic, toIso } from './util.js';
 
@@ -120,6 +120,35 @@ export async function apply(ctx) {
         end: patch.quietEnd ?? config.quietHours.end
       };
     }
+    // 看什么：加一路 / 减一路。加的那一路就是「搜这个关键词」。
+    if (Array.isArray(patch.watchAdd) && patch.watchAdd.length > 0) {
+      const lanes = [...next.external.lanes];
+      for (const raw of patch.watchAdd) {
+        const keyword = String(raw ?? '').trim();
+        if (keyword === '') continue;
+        if (lanes.some((lane) => lane.id === `kw:${keyword}`)) continue;
+        if (lanes.length >= 8) break;
+        const lane = resolveLane({
+          id: `kw:${keyword}`,
+          label: `搜 ${keyword}`,
+          args: ['search', 'video', keyword, '--order', 'views', '--size', '10'],
+          format: 'video',
+          prefix: `搜「${keyword}」`
+        });
+        if (lane !== null) lanes.push(lane);
+      }
+      next.external = { ...next.external, lanes };
+    }
+    if (Array.isArray(patch.watchRemove) && patch.watchRemove.length > 0) {
+      const drop = new Set(patch.watchRemove.map((id) => String(id ?? '').trim()).filter((id) => id !== ''));
+      next.external = {
+        ...next.external,
+        lanes: next.external.lanes.filter((lane) => !drop.has(lane.id) && !drop.has(lane.label))
+      };
+    }
+    if (patch.topicsEnabled !== undefined) {
+      next.external = { ...next.external, topics: { ...next.external.topics, enabled: patch.topicsEnabled } };
+    }
     writeJsonAtomic(join(config.dataDir, 'config.json'), serializable(next));
     config = next;
     log('info', `配置已更新：间隔 ${next.minGapSeconds}~${next.maxGapSeconds}s、阈值 ${next.scoreThreshold}、每日 ${next.maxDeliveriesPerDay} 条、安静时段 ${next.quietHours.start}-${next.quietHours.end}`);
@@ -130,7 +159,9 @@ export async function apply(ctx) {
       scoreThreshold: next.scoreThreshold,
       maxDeliveriesPerDay: next.maxDeliveriesPerDay,
       maxWakeupsPerHour: next.maxWakeupsPerHour,
-      quietHours: `${next.quietHours.start}-${next.quietHours.end}`
+      quietHours: `${next.quietHours.start}-${next.quietHours.end}`,
+      watchLanes: next.external.lanes.map((lane) => lane.id).join(' '),
+      topicsEnabled: next.external.topics.enabled
     };
   };
 
@@ -262,7 +293,17 @@ export async function apply(ctx) {
               gapMs: config.external.gapMinutes * 60_000
             });
           if (verdict.glance) {
-            const seen = await glance({ cli: biliCli, log });
+            // 看什么：配置里的 lanes + 我自己想弄明白的问题（从念头账本里取）。
+            const queries = config.external.topics.enabled
+              ? topicQueries(intent.ledger.open(Date.now()), { limit: config.external.topics.limit })
+              : [];
+            const seen = await glance({
+              cli: biliCli,
+              log,
+              lanes: config.external.lanes,
+              topics: { queries, order: config.external.topics.order, size: config.external.topics.size },
+              maxItems: config.external.maxItems
+            });
             external = seen.materials;
             recordGlance(glancePath, { materials: seen.materials, sources: seen.sources, at: Date.now() });
             if (seen.materials.length > 0) {
@@ -605,6 +646,9 @@ function serializable(config) {
     maxMaterials: config.maxMaterials,
     maxMaterialChars: config.maxMaterialChars,
     intent: config.intent,
+    // 外部素材源也要落盘：patchConfig 会整份重写 config.json，
+    // 漏掉这一段等于「改一次设置就把 lanes 抹回默认」。
+    external: config.external,
     target: { sessionId: config.target?.sessionId ?? '' }
   };
 }

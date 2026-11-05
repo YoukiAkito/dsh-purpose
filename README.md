@@ -156,11 +156,15 @@ cd ~/.dsh/profiles/desktop
 
 **安静时段不出门**：素材抓回来也会被 tick 的安静闸门丢掉，跑一趟纯属白费（好奇心还白降），所以 `quietHours` 内直接记 `[glance] 没出去：quiet_hours` 跳过。
 
-出门做的三件事，都走 `bili` CLI（自动找 `~/.local/bin/bili`，可用 `external.biliCli` 或环境变量 `DSH_PURPOSE_BILI` 指定）：
+出门看什么**不写死在代码里**，由 `external.lanes` 决定。默认三路（都走 `bili` CLI，自动找 `~/.local/bin/bili`，可用 `external.biliCli` 或环境变量 `DSH_PURPOSE_BILI` 指定）：
 
 - `bili --compact hot search` — B 站热搜
 - `bili --compact hot popular` — 综合热门视频（标题 + 作者 + 播放量）
-- `bili --compact search video "虚拟主播 切片" --order views` — 同行的切片，看别人在说什么、怎么逗观众（看一眼自己将来要干的这行）
+- `bili --compact search video "虚拟主播 切片" --order views` — 同行的切片，看别人在说什么、怎么逗观众
+
+一条 lane 就是 `{id, label, args, format, prefix}`：`args` 直接喂给 bili，`format` 决定怎么解析（`hot` / `popular` / `video`），`prefix` 是拼在素材文字前面的标签。想加一路，改配置或者用 `purpose_settings({watch_add: ["某个关键词"]})`，不必动代码；去掉用 `watch_remove` 填 id 或 label（`hot` / `popular` / `vtuber` / `kw:关键词`）。
+
+**还有一路是「我自己想弄明白的问题」**：`external.topics.enabled` 开着时，会从念头账本里挑 `question` 类的念头，把问题本身（截到第一个标点、最多 24 字）当搜索词，最多 `topics.limit` 条（默认 2）。想看什么由我决定，不是别人替我列好的清单。
 
 拿到的条目转成 `external_item` 素材，喂给正常打分流程。也就是说，看到了什么会**参与**「要不要说」，但不是必然开口——分数不够照样沉默。
 
@@ -176,7 +180,7 @@ cd ~/.dsh/profiles/desktop
 node --test test/
 ```
 
-133 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制、风险说明的措辞、出门看一眼的触发条件与三路素材转换。
+143 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制、风险说明的措辞、出门看一眼的触发条件、可配置 lane 与「自己的问题当搜索词」。
 
 ## 许可
 
@@ -187,7 +191,8 @@ GNU General Public License v2.0（GPL-2.0-only）。
 ## 已知限制
 
 - **没有做「读懂回复」的那一半**：投递之后，判断主人是正面还是负面回应，本版靠 `purpose_reclaim` 与沉默流水间接推断，没有 surfcore 那种逐轮扫回复更新 `confirmed`/`rejected` 的闭环。`feedback()` 已经写好但还没接上扫描器。
-- **素材来源有两处**：会话日志 + 出门看一眼（`src/glance.js`，走 `bili` CLI 抓热搜、热门、虚拟主播切片三路）。网页正文、评论区这些还没接；调用方也可以直接通过 `external` 传素材进来。
+- **素材来源有两处**：会话日志 + 出门看一眼（`src/glance.js`，走 `bili` CLI；看哪几路由 `external.lanes` 配置，默认热搜/热门/虚拟主播切片，另加「我自己想弄明白的问题」当搜索词）。网页正文、评论区这些还没接；调用方也可以直接通过 `external` 传素材进来。
+- **配置里的 lane 只认 bili 的 search/hot 子命令**：`args` 原样喂给 `bili --compact`，所以能不能加一路取决于 bili CLI 有没有那个子命令。加个 UP 主订阅得先看 bili 支不支持。
 - **没有 Web 面板**：只有工具和 JSONL 文件，看状态走 `purpose_status` / `purpose_intentions` 或直接读盘。
 - **动手那层默认关着**：`intent.execute = false`。打分和闸门都在跑，够格不会自己动手，而是发一条消息来问你要不要做（`askWhenQualified`，默认开）。worker 也没做步数硬中断——「最多 N 步」只是写在提示词里的约束，真正的刹车是时间盒（到点 `cancel`）。
 - **追问有频率限制**：同一条念头问过之后 20 小时内不再问（`ASK_COOLDOWN_HOURS`），两次追问之间至少隔 4 小时（`MIN_ASK_GAP_HOURS`）。冷却按「每条念头自己的上次询问时间」记，问 A 不会把 B 的冷却刷新掉。

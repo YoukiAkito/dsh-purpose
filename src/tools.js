@@ -151,7 +151,21 @@ export function registerPurposeTools(agentCtx, agent, service) {
       max_deliveries_per_day: { type: 'integer', description: '每天最多主动开口几条。' },
       max_wakeups_per_hour: { type: 'integer', description: '每小时内最多评估几次。' },
       quiet_start: { type: 'string', description: '安静时段开始 HH:MM。' },
-      quiet_end: { type: 'string', description: '安静时段结束 HH:MM。' }
+      quiet_end: { type: 'string', description: '安静时段结束 HH:MM。' },
+      watch_add: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '加一路要看的东西（搜索关键词）。想关注什么就加什么，不用改代码。'
+      },
+      watch_remove: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '去掉一路：填 lane 的 id（hot / popular / vtuber / kw:关键词）或 label。'
+      },
+      topics_enabled: {
+        type: 'boolean',
+        description: '要不要把念头账本里「想弄明白的问题」也当成搜索词。'
+      }
     },
     output: {
       schema: {
@@ -165,7 +179,9 @@ export function registerPurposeTools(agentCtx, agent, service) {
             scoreThreshold: { type: 'number', required: true },
             maxDeliveriesPerDay: { type: 'integer', required: true },
             maxWakeupsPerHour: { type: 'integer', required: true },
-            quietHours: { type: 'string', required: true }
+            quietHours: { type: 'string', required: true },
+            watchLanes: { type: 'string', required: true },
+            topicsEnabled: { type: 'boolean', required: true }
           }
         }, ERROR_SCHEMA]
       },
@@ -182,6 +198,9 @@ export function registerPurposeTools(agentCtx, agent, service) {
       if (Number.isFinite(args['max_wakeups_per_hour'])) patch.maxWakeupsPerHour = Math.max(1, Math.trunc(args['max_wakeups_per_hour']));
       if (typeof args['quiet_start'] === 'string' && args['quiet_start'] !== '') patch.quietStart = args['quiet_start'];
       if (typeof args['quiet_end'] === 'string' && args['quiet_end'] !== '') patch.quietEnd = args['quiet_end'];
+      if (Array.isArray(args['watch_add'])) patch.watchAdd = args['watch_add'];
+      if (Array.isArray(args['watch_remove'])) patch.watchRemove = args['watch_remove'];
+      if (typeof args['topics_enabled'] === 'boolean') patch.topicsEnabled = args['topics_enabled'];
       try {
         return service.patchConfig(patch);
       } catch (error) {

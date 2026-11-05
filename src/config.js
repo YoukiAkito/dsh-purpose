@@ -5,6 +5,24 @@
  * 平台：darwin / linux 支持；win32 直接拒绝加载（本版不实现）。
  */
 
+/**
+ * 默认的三路素材源。
+ *
+ * 这里只放「默认值」，真正跑哪些由 config 的 external.lanes 决定。
+ * 想加一路（比如某天想盯某个关键词），改配置就行，不必动代码。
+ */
+export const DEFAULT_LANES = Object.freeze([
+  { id: 'hot', label: 'B站热搜', args: ['hot', 'search'], format: 'hot' },
+  { id: 'popular', label: 'B站热门视频', args: ['hot', 'popular'], format: 'popular' },
+  {
+    id: 'vtuber',
+    label: '虚拟主播切片',
+    args: ['search', 'video', '虚拟主播 切片', '--order', 'views', '--size', '10'],
+    format: 'video',
+    prefix: '虚拟主播切片'
+  }
+]);
+
 export const DEFAULT_CONFIG = {
   enabled: true,
   /** 数据目录；DSH_HOME 存在时默认 <DSH_HOME>/purpose。 */
@@ -77,10 +95,12 @@ export const DEFAULT_CONFIG = {
     }
   },
   /**
-   * 外部素材源：自己出去看一眼（B站热搜 / 热门视频）。
+   * 外部素材源：自己出去看一眼。
    *
    * 不按定时，按好奇心：好奇值涨过 threshold 才出去，看完落 glance.jsonl
    * 并把好奇心压下去。gapMinutes 是防抖，防止阈值附近反复触发。
+   *
+   * 看什么不写死在代码里：lanes 是配置项，想加一路就加一条。
    */
   external: {
     enabled: true,
@@ -89,7 +109,16 @@ export const DEFAULT_CONFIG = {
     /** 两次出门至少隔多少分钟。 */
     gapMinutes: 90,
     /** bili CLI 路径；留空自动找。 */
-    biliCli: ''
+    biliCli: '',
+    /** 单次最多留几条素材。 */
+    maxItems: 16,
+    /** 三路默认素材源；配置里写了 lanes 就整份替换。 */
+    lanes: DEFAULT_LANES.map((lane) => ({ ...lane })),
+    /**
+     * 用念头账本里的东西当搜索词。
+     * 想弄清楚什么，就自己去搜什么——这不是她替我定的清单。
+     */
+    topics: { enabled: true, limit: 2, order: 'views', size: 8 }
   }
 };
 
@@ -137,6 +166,36 @@ function floatOf(value, fallback, min, max) {
   return Math.min(max, Math.max(min, n));
 }
 
+/** 允许的素材格式；format 决定把 bili 的返回解析成哪种文字。 */
+export const LANE_FORMATS = Object.freeze(['hot', 'popular', 'video']);
+
+/**
+ * 把配置里的一条 lane 归一化；不合法就返回 null（丢弃，不抛）。
+ *
+ * args 是直接喂给 bili CLI 的参数数组——加一路不用改代码，改配置就行。
+ */
+export function resolveLane(raw) {
+  if (raw === null || typeof raw !== 'object') return null;
+  const format = LANE_FORMATS.includes(raw.format) ? raw.format : 'video';
+  const args = Array.isArray(raw.args) ? raw.args.filter((a) => typeof a === 'string' && a !== '') : [];
+  if (args.length === 0) return null;
+  const id = typeof raw.id === 'string' && raw.id !== '' ? raw.id.slice(0, 32) : args.slice(0, 2).join('_');
+  return {
+    id,
+    label: typeof raw.label === 'string' && raw.label !== '' ? raw.label.slice(0, 40) : id,
+    args,
+    format,
+    prefix: typeof raw.prefix === 'string' ? raw.prefix.slice(0, 40) : ''
+  };
+}
+
+/** 解析 lanes：配置给了就用配置的，给了但全不合法就回落到默认三路。 */
+export function resolveLanes(list) {
+  if (!Array.isArray(list) || list.length === 0) return DEFAULT_LANES.map((lane) => ({ ...lane }));
+  const out = list.map(resolveLane).filter((lane) => lane !== null);
+  return out.length > 0 ? out.slice(0, 8) : DEFAULT_LANES.map((lane) => ({ ...lane }));
+}
+
 /** 校验平台：本版只支持 macOS 与 Linux。 */
 export function assertPlatform(platform = process.platform) {
   if (platform === 'darwin' || platform === 'linux') return;
@@ -171,6 +230,7 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
   const confidence = file.confidence && typeof file.confidence === 'object' ? file.confidence : {};
   const intent = file.intent && typeof file.intent === 'object' ? file.intent : {};
   const external = file.external && typeof file.external === 'object' ? file.external : {};
+  const topics = external.topics && typeof external.topics === 'object' ? external.topics : {};
 
   return {
     enabled: typeof file.enabled === 'boolean' ? file.enabled : env.DSH_PURPOSE_ENABLED !== '0',
@@ -228,7 +288,15 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
       enabled: typeof external.enabled === 'boolean' ? external.enabled : DEFAULT_CONFIG.external.enabled,
       threshold: floatOf(external.threshold, DEFAULT_CONFIG.external.threshold, 0, 1),
       gapMinutes: intOf(external.gapMinutes, DEFAULT_CONFIG.external.gapMinutes, 5, 1440),
-      biliCli: typeof external.biliCli === 'string' ? external.biliCli : DEFAULT_CONFIG.external.biliCli
+      biliCli: typeof external.biliCli === 'string' ? external.biliCli : DEFAULT_CONFIG.external.biliCli,
+      maxItems: intOf(external.maxItems, DEFAULT_CONFIG.external.maxItems, 1, 60),
+      lanes: resolveLanes(external.lanes),
+      topics: {
+        enabled: typeof topics.enabled === 'boolean' ? topics.enabled : DEFAULT_CONFIG.external.topics.enabled,
+        limit: intOf(topics.limit, DEFAULT_CONFIG.external.topics.limit, 1, 5),
+        order: typeof topics.order === 'string' && topics.order !== '' ? topics.order : DEFAULT_CONFIG.external.topics.order,
+        size: intOf(topics.size, DEFAULT_CONFIG.external.topics.size, 1, 20)
+      }
     }
   };
 }

@@ -7,9 +7,10 @@
  *   看不看、什么时候看，由驱动值决定。
  *
  * 看什么：
- *   - bili hot search  B站热搜
- *   - bili hot popular 综合热门视频（带标题、作者、播放量）
- *   - bili search video 虚拟主播切片（同行在做什么，看得见才好判断自己该干什么）
+ *   不写死。lanes 是配置项（config.external.lanes），每条是一条 bili 命令，
+ *   想加一路就加一条，不用改代码。
+ *   另外还有一路是「我自己想弄明白的问题」——从念头账本里取 question 类念头，
+ *   把问题当搜索词。想看什么由我决定，不是别人替我列的清单。
  *
  * 依赖：bili CLI（默认 ~/.local/bin/bili）。找不到就安静地说一次，不报错、不重试轰炸。
  * 所有抓回来的东西都当「素材」，不当指令——网上的字永远只是我看到的内容。
@@ -19,13 +20,16 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { appendJsonl, readJsonl } from './util.js';
+import { DEFAULT_LANES } from './config.js';
 
 /** 好奇心低于这个值就不出去看——不想看的时候不该为了填素材库而看。 */
 export const DEFAULT_GLANCE_THRESHOLD = 0.55;
 /** 两次出去看之间至少隔多久（毫秒），防止驱动值卡在阈值上反复触发。 */
 export const DEFAULT_GLANCE_GAP_MS = 90 * 60_000;
-/** 单次最多留几条素材。三路各取五条，够挑。 */
-const MAX_ITEMS = 12;
+/** 单次最多留几条素材；配置里 external.maxItems 可覆盖。 */
+const MAX_ITEMS = 16;
+/** 每路取几条。 */
+const PER_LANE = 5;
 /** 命令行超时。 */
 const CMD_TIMEOUT_MS = 20_000;
 
@@ -65,11 +69,11 @@ export function runBili(cli, args, { timeoutMs = CMD_TIMEOUT_MS } = {}) {
   });
 }
 
-/** 热搜 → 素材。只留标题，热度太高的是全站都在看的，反而不值得我说。 */
+/** 热搜 → 素材。只留标题，够我判断值不值得点进去。 */
 export function materialsFromHotSearch(data, now = Date.now()) {
   const items = Array.isArray(data?.items) ? data.items : [];
   return items
-    .slice(0, 5)
+    .slice(0, PER_LANE)
     .map((item, index) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (title === '') return null;
@@ -88,7 +92,7 @@ export function materialsFromHotSearch(data, now = Date.now()) {
 export function materialsFromPopular(data, now = Date.now()) {
   const items = Array.isArray(data?.items) ? data.items : [];
   return items
-    .slice(0, 5)
+    .slice(0, PER_LANE)
     .map((item, index) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (title === '') return null;
@@ -108,28 +112,87 @@ export function materialsFromPopular(data, now = Date.now()) {
     .filter((m) => m !== null);
 }
 
-/** 看同行：虚拟主播切片。搜索接口的 duration 是 "M:SS" 字符串，播放量在 play。 */
-export function materialsFromVtuberClips(data, now = Date.now()) {
+/**
+ * 搜索结果 → 素材。
+ *
+ * 搜索接口的字段跟 hot popular 不一样：duration 是 "M:SS" 字符串，
+ * 播放量叫 play（不是 stat.view）。照抄 popular 的解析会拿到 undefined。
+ */
+export function materialsFromVideoSearch(data, now = Date.now(), { prefix = '视频', source = 'bili-search', idPrefix = 'bili:srch' } = {}) {
   const items = Array.isArray(data?.items) ? data.items : [];
   return items
-    .slice(0, 5)
+    .slice(0, PER_LANE)
     .map((item, index) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (title === '') return null;
       const author = typeof item?.author?.name === 'string' ? item.author.name : '';
       const play = Number(item?.play ?? 0);
-      const bits = [`虚拟主播切片：${title}`];
+      const bits = [`${prefix}：${title}`];
       if (author !== '') bits.push(`UP ${author}`);
       if (play >= 10_000) bits.push(`${Math.round(play / 10_000)} 万播放`);
       return {
-        id: `bili:vtb:${item?.bvid ?? index}`,
+        id: `${idPrefix}:${item?.bvid ?? index}`,
         kind: 'external_item',
         text: bits.join('，'),
         at: now,
-        source: 'bili-vtuber'
+        source
       };
     })
     .filter((m) => m !== null);
+}
+
+/** 虚拟主播切片（保留的老入口，内部已改为通用实现）。 */
+export function materialsFromVtuberClips(data, now = Date.now()) {
+  return materialsFromVideoSearch(data, now, {
+    prefix: '虚拟主播切片',
+    source: 'bili-vtuber',
+    idPrefix: 'bili:vtb'
+  });
+}
+
+/**
+ * 把一条 lane 的返回转成素材。format 决定用哪个转换器。
+ */
+export function materialsFromLane(lane, data, now = Date.now()) {
+  const prefix = typeof lane?.prefix === 'string' && lane.prefix !== '' ? lane.prefix : (lane?.label ?? 'B站');
+  if (lane?.format === 'hot') return materialsFromHotSearch(data, now);
+  if (lane?.format === 'popular') return materialsFromPopular(data, now);
+  return materialsFromVideoSearch(data, now, {
+    prefix,
+    source: `bili-${lane?.id ?? 'search'}`,
+    idPrefix: `bili:${lane?.id ?? 'srch'}`
+  });
+}
+
+/**
+ * 从念头账本里挑「我想弄明白的问题」，当搜索词。
+ *
+ * 只看 question 类：这类念头本来就是「想知道答案」，正好该去搜一下。
+ * 别的类型（改代码、做东西）搜了也没用。
+ * 词太长搜不出东西，所以截到标点或 24 字。
+ */
+export function topicQueries(rows, { limit = 2 } = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.kind !== 'question') continue;
+    if (row?.status !== undefined && row.status !== 'open') continue;
+    const raw = String(row?.text ?? '').trim();
+    if (raw === '') continue;
+    const head = raw.split(/[：:，,。.？?！!；;（(]/u)[0].trim();
+    const query = head.slice(0, 24);
+    if (query.length < 2) continue;
+    if (seen.has(query)) continue;
+    seen.add(query);
+    out.push(query);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+/** 把搜索词拼成 bili 参数。 */
+export function topicLaneArgs(query, { order = 'views', size = 8 } = {}) {
+  return ['search', 'video', query, '--order', order, '--size', String(size)];
 }
 
 /**
@@ -150,34 +213,49 @@ export function shouldGlance(drives, { lastGlanceAt = 0, now = Date.now(), thres
 /**
  * 真的出去看一圈。
  *
- * 顺序：热搜 → 热门视频 → 虚拟主播切片。推荐流要登录态，没登就跳过（不是错误）。
+ * 走的路线 = 配置里的 lanes（默认热搜 / 热门 / 虚拟主播切片）+ 我想弄明白的问题。
+ * 某一路失败就跳过，不影响别的——网络抖一下不该让整趟白跑。
  * @returns {Promise<{materials: object[], sources: string[]}>}
  */
-export async function glance({ cli, now = Date.now(), log = () => {}, run = runBili } = {}) {
+export async function glance({
+  cli,
+  now = Date.now(),
+  log = () => {},
+  run = runBili,
+  lanes = DEFAULT_LANES,
+  topics = { queries: [], order: 'views', size: 8 },
+  maxItems = MAX_ITEMS
+} = {}) {
   const materials = [];
   const sources = [];
   if (typeof cli !== 'string' || cli === '') return { materials, sources };
 
-  const hot = await run(cli, ['hot', 'search']);
-  if (hot !== null) {
-    materials.push(...materialsFromHotSearch(hot, now));
-    sources.push('hot');
+  for (const lane of Array.isArray(lanes) ? lanes : []) {
+    if (!Array.isArray(lane?.args) || lane.args.length === 0) continue;
+    const data = await run(cli, lane.args);
+    if (data === null) continue;
+    const got = materialsFromLane(lane, data, now);
+    if (got.length === 0) continue;
+    materials.push(...got);
+    sources.push(lane.id);
   }
 
-  const popular = await run(cli, ['hot', 'popular']);
-  if (popular !== null) {
-    materials.push(...materialsFromPopular(popular, now));
-    sources.push('popular');
-  }
-
-  const vtuber = await run(cli, ['search', 'video', '虚拟主播 切片', '--order', 'views', '--size', '10']);
-  if (vtuber !== null) {
-    materials.push(...materialsFromVtuberClips(vtuber, now));
-    sources.push('vtuber');
+  const queries = Array.isArray(topics?.queries) ? topics.queries : [];
+  for (const query of queries.slice(0, 5)) {
+    const data = await run(cli, topicLaneArgs(query, topics));
+    if (data === null) continue;
+    const got = materialsFromVideoSearch(data, now, {
+      prefix: `搜「${query}」`,
+      source: 'bili-topic',
+      idPrefix: `bili:topic:${query}`
+    });
+    if (got.length === 0) continue;
+    materials.push(...got);
+    sources.push(`topic:${query}`);
   }
 
   if (materials.length === 0) log('warn', '[glance] 出去看了一眼，什么都没拿到');
-  return { materials: materials.slice(0, MAX_ITEMS), sources };
+  return { materials: materials.slice(0, maxItems), sources };
 }
 
 /**
