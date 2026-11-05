@@ -8,7 +8,7 @@
  *   { version, drives, lastEvolvedAt, recentIntentionIds, lastDecision, lastRunAt }
  */
 import { join } from 'node:path';
-import { evolveDrives, normalizeDrives, tensionOf, describeDrives, satisfyDrive } from './drives.js';
+import { evolveDrives, normalizeDrives, tensionOf, describeDrives, satisfyDrive, DEFAULT_DRIVE_TUNING } from './drives.js';
 import { IntentionLedger } from './intentions.js';
 import { buildCandidates, decide, DEFAULT_THRESHOLD } from './intent-engine.js';
 import { readJson, writeJsonAtomic } from './util.js';
@@ -28,19 +28,32 @@ export const EMPTY_INTENT_STATE = Object.freeze({
   lastRunAt: 0
 });
 
-const MAX_RECENT = 20;
+const DEFAULT_MAX_RECENT = 20;
 const RECENT_WINDOW_HOURS = 48;
-/** 同一条念头问过一次后，多久之内不再追问。 */
+/** 同一条念头问过一次后，多久之内不再追问（默认值；config.intent.askCooldownHours 可覆盖）。 */
 export const ASK_COOLDOWN_HOURS = 20;
-/** 两次追问之间至少隔多久，防止一天里反复冒出来烦人。 */
+/** 两次追问之间至少隔多久，防止一天里反复冒出来烦人（config.intent.minAskGapHours 可覆盖）。 */
 export const MIN_ASK_GAP_HOURS = 4;
 
 export class IntentRuntime {
-  constructor(dataDir) {
+  /**
+   * @param {string} dataDir
+   * @param {object} [options]
+   * @param {object} [options.tuning]        驱动调参（config.drives 归一化后的结果）
+   * @param {number} [options.maxRecent]     最近念头记多少条
+   * @param {number} [options.askCooldownHours]
+   * @param {number} [options.minAskGapHours]
+   */
+  constructor(dataDir, { tuning = DEFAULT_DRIVE_TUNING, maxRecent = DEFAULT_MAX_RECENT,
+    askCooldownHours = ASK_COOLDOWN_HOURS, minAskGapHours = MIN_ASK_GAP_HOURS } = {}) {
     this.dataDir = dataDir;
     this.statePath = join(dataDir, 'intent-state.json');
     this.ledger = new IntentionLedger(dataDir);
-    this.state = { ...EMPTY_INTENT_STATE, drives: normalizeDrives({}) };
+    this.tuning = tuning ?? DEFAULT_DRIVE_TUNING;
+    this.maxRecent = Number.isFinite(maxRecent) && maxRecent > 0 ? Math.trunc(maxRecent) : DEFAULT_MAX_RECENT;
+    this.askCooldownHours = Number.isFinite(askCooldownHours) ? askCooldownHours : ASK_COOLDOWN_HOURS;
+    this.minAskGapHours = Number.isFinite(minAskGapHours) ? minAskGapHours : MIN_ASK_GAP_HOURS;
+    this.state = { ...EMPTY_INTENT_STATE, drives: normalizeDrives({}, this.tuning) };
   }
 
   load(log = () => {}) {
@@ -49,9 +62,9 @@ export class IntentRuntime {
       this.state = {
         ...EMPTY_INTENT_STATE,
         ...raw,
-        drives: normalizeDrives(raw.drives),
-        recentIntentionIds: Array.isArray(raw.recentIntentionIds) ? raw.recentIntentionIds.slice(-MAX_RECENT) : [],
-        askedIntentionIds: Array.isArray(raw.askedIntentionIds) ? raw.askedIntentionIds.slice(-MAX_RECENT) : [],
+        drives: normalizeDrives(raw.drives, this.tuning),
+        recentIntentionIds: Array.isArray(raw.recentIntentionIds) ? raw.recentIntentionIds.slice(-this.maxRecent) : [],
+        askedIntentionIds: Array.isArray(raw.askedIntentionIds) ? raw.askedIntentionIds.slice(-this.maxRecent) : [],
         askedAt: raw.askedAt !== null && typeof raw.askedAt === 'object' ? { ...raw.askedAt } : {},
         lastAskAt: Number(raw.lastAskAt) || 0
       };
@@ -69,7 +82,7 @@ export class IntentRuntime {
     const last = Number(this.state.lastEvolvedAt) || now;
     const hours = Math.max(0, (now - last) / 3600_000);
     if (hours > 0) {
-      this.state.drives = evolveDrives(this.state.drives, { hoursSince: hours, ...opts });
+      this.state.drives = evolveDrives(this.state.drives, { hoursSince: hours, tuning: this.tuning, ...opts });
       this.state.lastEvolvedAt = now;
     }
     return this.state.drives;
@@ -77,7 +90,7 @@ export class IntentRuntime {
 
   /** 记录"某个念头被做掉了"，用来给驱动回落。 */
   satisfy(drive, strength = 1) {
-    this.state.drives = satisfyDrive(this.state.drives, drive, strength);
+    this.state.drives = satisfyDrive(this.state.drives, drive, strength, this.tuning);
     return this.state.drives;
   }
 
@@ -94,7 +107,7 @@ export class IntentRuntime {
   evaluate({ now = Date.now(), config = {}, log = () => {}, wakeupsLastHour = 0, maxWakeupsPerHour = 6 } = {}) {
     this.advanceDrives(now, { wakeupsLastHour, maxWakeupsPerHour });
 
-    const tension = tensionOf(this.state.drives);
+    const tension = tensionOf(this.state.drives, this.tuning);
     const minTension = Number.isFinite(config.minTension) ? config.minTension : 0.30;
     if (tension < minTension) {
       const result = {
@@ -144,7 +157,7 @@ export class IntentRuntime {
     };
 
     if (result.chosen !== null && result.decision !== 'skip') {
-      this.state.recentIntentionIds = [...this.state.recentIntentionIds, result.chosen.id].slice(-MAX_RECENT);
+      this.state.recentIntentionIds = [...this.state.recentIntentionIds, result.chosen.id].slice(-this.maxRecent);
     }
     this.#remember(result, now);
 
@@ -183,7 +196,7 @@ export class IntentRuntime {
       skipped: outcome.skipped === true,
       reason: outcome.reason ?? outcome.error ?? ''
     };
-    this.state.recentIntentionIds = [...this.state.recentIntentionIds, chosen.id].slice(-MAX_RECENT);
+    this.state.recentIntentionIds = [...this.state.recentIntentionIds, chosen.id].slice(-this.maxRecent);
     this.state.lastDecision = `${entry.decision}/${entry.ok ? 'done' : entry.skipped ? 'skipped' : 'failed'}`;
     this.persist();
     return { ...this.state, lastSettle: entry };
@@ -211,13 +224,13 @@ export class IntentRuntime {
     // 否则问过 A 之后再问 B，A 的冷却会被 B 的询问刷新掉。
     const askedAt = this.state.askedAt ?? {};
     const mineAt = Number(askedAt[chosen.id]) || 0;
-    if (mineAt > 0 && (now - mineAt) / 3600_000 < ASK_COOLDOWN_HOURS) {
+    if (mineAt > 0 && (now - mineAt) / 3600_000 < this.askCooldownHours) {
       return { ask: false, reason: 'already_asked' };
     }
     const lastAskAt = Number(this.state.lastAskAt) || 0;
     const hoursSinceAsk = lastAskAt === 0 ? Infinity : (now - lastAskAt) / 3600_000;
-    if (hoursSinceAsk < MIN_ASK_GAP_HOURS) {
-      return { ask: false, reason: `ask_gap(${hoursSinceAsk.toFixed(1)}h<${MIN_ASK_GAP_HOURS}h)` };
+    if (hoursSinceAsk < this.minAskGapHours) {
+      return { ask: false, reason: `ask_gap(${hoursSinceAsk.toFixed(1)}h<${this.minAskGapHours}h)` };
     }
     return { ask: true, reason: 'qualified' };
   }
@@ -225,9 +238,9 @@ export class IntentRuntime {
   /** 记下「为这条念头开口问过了」。 */
   markAsked(intentionId, now = Date.now()) {
     if (typeof intentionId !== 'string' || intentionId === '') return;
-    this.state.askedIntentionIds = [...this.state.askedIntentionIds, intentionId].slice(-MAX_RECENT);
+    this.state.askedIntentionIds = [...this.state.askedIntentionIds, intentionId].slice(-this.maxRecent);
     const askedAt = { ...(this.state.askedAt ?? {}), [intentionId]: now };
-    // 只留最近 MAX_RECENT 条，防止文件无限长大。
+    // 只留最近 maxRecent 条，防止文件无限长大。
     const keep = new Set(this.state.askedIntentionIds);
     this.state.askedAt = Object.fromEntries(Object.entries(askedAt).filter(([id]) => keep.has(id)));
     this.state.lastAskAt = now;
@@ -240,7 +253,7 @@ export class IntentRuntime {
     const open = this.ledger.open(now);
     return {
       drives: { ...this.state.drives },
-      tension: Number(tensionOf(this.state.drives).toFixed(3)),
+      tension: Number(tensionOf(this.state.drives, this.tuning).toFixed(3)),
       lastDecision: this.state.lastDecision,
       lastRunAt: this.state.lastRunAt === 0 ? '' : new Date(this.state.lastRunAt).toISOString(),
       lastAskAt: Number(this.state.lastAskAt) > 0 ? new Date(Number(this.state.lastAskAt)).toISOString() : '',

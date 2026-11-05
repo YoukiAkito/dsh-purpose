@@ -61,6 +61,40 @@ export const DEFAULT_CONFIG = {
   maxMaterials: 24,
   /** 提示词里每条素材最长多少字符。 */
   maxMaterialChars: 220,
+  /**
+   * 驱动值调参。
+   *
+   * 这几组数决定「我多久想动一次、动完落多快、累得多难受」——是这个 agent
+   * 的脾气，不该写死在代码里。想让我更沉得住气就调慢 growthPerHour，
+   * 想让我更钝就抬 tensionFloor 的反面（调低）。
+   */
+  drives: {
+    /** 初始值：刚醒来时有点好奇、有点闲，但不算躁动。 */
+    defaults: { curiosity: 0.42, boredom: 0.20, restlessness: 0.10, pride: 0.15, fatigue: 0.05 },
+    /** 每小时增长率（空转时）。 */
+    growthPerHour: { curiosity: 0.16, boredom: 0.22, restlessness: 0.10, pride: 0.05, fatigue: 0 },
+    /** 满足一次时回落的比例系数。 */
+    satisfyRate: { curiosity: 0.45, boredom: 0.50, restlessness: 0.60, pride: 0.40, fatigue: 0 },
+    /** tension 里各驱动的权重；fatigue 是负号（越累越不想动）。 */
+    tensionWeight: { curiosity: 0.32, boredom: 0.24, restlessness: 0.22, pride: 0.12, fatigue: -0.30 },
+    /** tension 的底噪：让「什么都没干」也有机会开口。 */
+    tensionFloor: 0.35,
+    /** 被拒绝/跳过时 restlessness 反弹多少。 */
+    frustrateAmount: 0.12,
+    /** fatigue 每小时涨多少（乘以唤醒负载）。 */
+    fatigueGrowthPerHour: 0.20,
+    /** 静置超过这么多小时，fatigue 开始回落。 */
+    fatigueRestAfterHours: 3,
+    /** 静置时每小时回落多少。 */
+    fatigueRestPerHour: 0.12,
+    /** 单次演进最多算多少小时（防止停机一周后一口气涨满）。 */
+    maxHours: 48
+  },
+  /** 循环自身的节奏：卡多久算超时、被占用后多久重试。 */
+  timeouts: {
+    tickMs: 120_000,
+    busyRetryMs: 60_000
+  },
   /** 念头机制：驱动 + 账本 + 打分 + 够格才动手。 */
   intent: {
     enabled: true,
@@ -79,6 +113,12 @@ export const DEFAULT_CONFIG = {
      * 默认开：只在日志里躺着等于白想。同一条念头问过就不再问。
      */
     askWhenQualified: true,
+    /** 同一条念头问过一次后，多少小时内不再追问。 */
+    askCooldownHours: 20,
+    /** 两次追问之间至少隔多少小时，防止一天里反复烦人。 */
+    minAskGapHours: 4,
+    /** 最近做过的念头记多少条（用于「刚做过的不急」判定）。 */
+    maxRecent: 20,
     /** worker 会话挂哪个人设；留空 = 不挂（只有 host-plane 工具）。 */
     workerPreset: '',
     /**
@@ -112,13 +152,24 @@ export const DEFAULT_CONFIG = {
     biliCli: '',
     /** 单次最多留几条素材。 */
     maxItems: 16,
+    /** 每一路各取几条（热搜/热门/搜索共用）。 */
+    perLane: 5,
+    /** 单条 bili 命令的超时（毫秒）。 */
+    cmdTimeoutMs: 20_000,
     /** 三路默认素材源；配置里写了 lanes 就整份替换。 */
     lanes: DEFAULT_LANES.map((lane) => ({ ...lane })),
     /**
      * 用念头账本里的东西当搜索词。
      * 想弄清楚什么，就自己去搜什么——这不是她替我定的清单。
      */
-    topics: { enabled: true, limit: 2, order: 'views', size: 8 }
+    topics: {
+      enabled: true,
+      limit: 2,
+      order: 'views',
+      size: 8,
+      /** 念头原文当搜索词时截多长（太长搜不出东西）。 */
+      maxQueryChars: 24
+    }
   }
 };
 
@@ -205,6 +256,44 @@ export function assertPlatform(platform = process.platform) {
   throw new Error(`dsh-purpose 不支持此平台：${platform}`);
 }
 
+/**
+ * 按驱动的键把一份数字表归一化：只认表里已有的键，越界夹回，缺的用默认值。
+ *
+ * 写了未知键（比如手滑多打一个字母）直接丢掉——配置打错不该静默改变行为。
+ */
+function driveTable(raw, fallback, min, max) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  for (const [key, fallbackValue] of Object.entries(fallback)) {
+    out[key] = floatOf(src[key], fallbackValue, min, max);
+  }
+  return out;
+}
+
+/**
+ * 归一化驱动调参（config.drives）。整段缺省 = 全用默认值；写了一半 = 写的那半生效。
+ *
+ * 这组数决定「我多久想动一次、动完落多快、累得多难受」——是这个 agent 的脾气。
+ */
+export function resolveDrivesTuning(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const base = DEFAULT_CONFIG.drives;
+  return {
+    defaults: driveTable(src.defaults, base.defaults, 0, 1),
+    // 增长率允许大于 1（快得离谱也算有效配置），但不允许负增长。
+    growthPerHour: driveTable(src.growthPerHour, base.growthPerHour, 0, 10),
+    satisfyRate: driveTable(src.satisfyRate, base.satisfyRate, 0, 1),
+    // 权重可以有负号（fatigue 就是负的），所以下界放到 -3。
+    tensionWeight: driveTable(src.tensionWeight, base.tensionWeight, -3, 3),
+    tensionFloor: floatOf(src.tensionFloor, base.tensionFloor, 0, 1),
+    frustrateAmount: floatOf(src.frustrateAmount, base.frustrateAmount, 0, 1),
+    fatigueGrowthPerHour: floatOf(src.fatigueGrowthPerHour, base.fatigueGrowthPerHour, 0, 5),
+    fatigueRestAfterHours: floatOf(src.fatigueRestAfterHours, base.fatigueRestAfterHours, 0, 72),
+    fatigueRestPerHour: floatOf(src.fatigueRestPerHour, base.fatigueRestPerHour, 0, 5),
+    maxHours: intOf(src.maxHours, base.maxHours, 1, 720)
+  };
+}
+
 /** 合并默认值 + 文件 + 环境变量，返回归一化后的配置。 */
 export function resolveConfig({ platform = process.platform, env = process.env, file = {} } = {}) {
   assertPlatform(platform);
@@ -231,6 +320,8 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
   const intent = file.intent && typeof file.intent === 'object' ? file.intent : {};
   const external = file.external && typeof file.external === 'object' ? file.external : {};
   const topics = external.topics && typeof external.topics === 'object' ? external.topics : {};
+  const drives = file.drives && typeof file.drives === 'object' ? file.drives : {};
+  const timeouts = file.timeouts && typeof file.timeouts === 'object' ? file.timeouts : {};
 
   return {
     enabled: typeof file.enabled === 'boolean' ? file.enabled : env.DSH_PURPOSE_ENABLED !== '0',
@@ -261,6 +352,11 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
     },
     maxMaterials: intOf(file.maxMaterials, DEFAULT_CONFIG.maxMaterials, 1, 200),
     maxMaterialChars: intOf(file.maxMaterialChars, DEFAULT_CONFIG.maxMaterialChars, 20, 2000),
+    drives: resolveDrivesTuning(drives),
+    timeouts: {
+      tickMs: intOf(timeouts.tickMs, DEFAULT_CONFIG.timeouts.tickMs, 5_000, 1_800_000),
+      busyRetryMs: intOf(timeouts.busyRetryMs, DEFAULT_CONFIG.timeouts.busyRetryMs, 1_000, 3_600_000)
+    },
     intent: {
       enabled: typeof intent.enabled === 'boolean' ? intent.enabled : DEFAULT_CONFIG.intent.enabled,
       tickSeconds: intOf(intent.tickSeconds ?? env.DSH_PURPOSE_INTENT_TICK, DEFAULT_CONFIG.intent.tickSeconds, 60, 86400),
@@ -269,6 +365,9 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
       autonomousThreshold: floatOf(intent.autonomousThreshold, DEFAULT_CONFIG.intent.autonomousThreshold, 0, 1),
       execute: typeof intent.execute === 'boolean' ? intent.execute : DEFAULT_CONFIG.intent.execute,
       askWhenQualified: typeof intent.askWhenQualified === 'boolean' ? intent.askWhenQualified : DEFAULT_CONFIG.intent.askWhenQualified,
+      askCooldownHours: floatOf(intent.askCooldownHours, DEFAULT_CONFIG.intent.askCooldownHours, 0, 720),
+      minAskGapHours: floatOf(intent.minAskGapHours, DEFAULT_CONFIG.intent.minAskGapHours, 0, 168),
+      maxRecent: intOf(intent.maxRecent, DEFAULT_CONFIG.intent.maxRecent, 1, 500),
       workerPreset: typeof intent.workerPreset === 'string' ? intent.workerPreset : DEFAULT_CONFIG.intent.workerPreset,
       worker: {
         maxSteps: intOf(intent.worker?.maxSteps, DEFAULT_CONFIG.intent.worker.maxSteps, 1, 60),
@@ -290,12 +389,15 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
       gapMinutes: intOf(external.gapMinutes, DEFAULT_CONFIG.external.gapMinutes, 5, 1440),
       biliCli: typeof external.biliCli === 'string' ? external.biliCli : DEFAULT_CONFIG.external.biliCli,
       maxItems: intOf(external.maxItems, DEFAULT_CONFIG.external.maxItems, 1, 60),
+      perLane: intOf(external.perLane, DEFAULT_CONFIG.external.perLane, 1, 20),
+      cmdTimeoutMs: intOf(external.cmdTimeoutMs, DEFAULT_CONFIG.external.cmdTimeoutMs, 1_000, 120_000),
       lanes: resolveLanes(external.lanes),
       topics: {
         enabled: typeof topics.enabled === 'boolean' ? topics.enabled : DEFAULT_CONFIG.external.topics.enabled,
         limit: intOf(topics.limit, DEFAULT_CONFIG.external.topics.limit, 1, 5),
         order: typeof topics.order === 'string' && topics.order !== '' ? topics.order : DEFAULT_CONFIG.external.topics.order,
-        size: intOf(topics.size, DEFAULT_CONFIG.external.topics.size, 1, 20)
+        size: intOf(topics.size, DEFAULT_CONFIG.external.topics.size, 1, 20),
+        maxQueryChars: intOf(topics.maxQueryChars, DEFAULT_CONFIG.external.topics.maxQueryChars, 2, 80)
       }
     }
   };

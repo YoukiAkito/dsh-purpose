@@ -180,3 +180,42 @@ test('view 暴露 lastAskAt 与 askedCount', () => withDir((dir) => {
   assert.equal(rt.view().askedCount, 1);
   assert.notEqual(rt.view().lastAskAt, '');
 }));
+
+test('构造时可传调参：驱动初值与衰减都跟着走', () => withDir((dir) => {
+  const tuning = {
+    defaults: { curiosity: 0.9, boredom: 0, restlessness: 0, pride: 0, fatigue: 0 },
+    growthPerHour: { curiosity: 0.16, boredom: 0.22, restlessness: 0.10, pride: 0.05, fatigue: 0 },
+    satisfyRate: { curiosity: 1, boredom: 0.50, restlessness: 0.60, pride: 0.40, fatigue: 0 },
+    tensionWeight: { curiosity: 0.32, boredom: 0.24, restlessness: 0.22, pride: 0.12, fatigue: -0.30 },
+    tensionFloor: 0.35,
+    frustrateAmount: 0.12,
+    fatigueGrowthPerHour: 0.20,
+    fatigueRestAfterHours: 3,
+    fatigueRestPerHour: 0.12,
+    maxHours: 48
+  };
+  const rt = new IntentRuntime(dir, { tuning });
+  rt.load();
+  assert.equal(rt.state.drives.curiosity, 0.9);
+  rt.satisfy('curiosity', 1);
+  assert.equal(rt.state.drives.curiosity, 0);
+}));
+
+test('maxRecent 决定记账留几条', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir, { maxRecent: 2 });
+  rt.load();
+  rt.markAsked('i_a');
+  rt.markAsked('i_b');
+  rt.markAsked('i_c');
+  assert.deepEqual(rt.state.askedIntentionIds, ['i_b', 'i_c']);
+  assert.deepEqual(Object.keys(rt.state.askedAt).sort(), ['i_b', 'i_c']);
+}));
+
+test('追问冷却时长能改', () => withDir((dir) => {
+  const rt = new IntentRuntime(dir, { askCooldownHours: 1, minAskGapHours: 0 });
+  rt.load();
+  const now = Date.parse('2026-11-05T00:00:00.000Z');
+  rt.markAsked('i_a', now);
+  assert.equal(rt.shouldAsk({ chosen: { id: 'i_a', text: 'x' } }, now + 30 * 60_000).ask, false);
+  assert.equal(rt.shouldAsk({ chosen: { id: 'i_a', text: 'x' } }, now + 90 * 60_000).ask, true);
+}));

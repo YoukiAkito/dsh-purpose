@@ -24,6 +24,46 @@
   },
   "maxMaterials": 24,
   "maxMaterialChars": 220,
+  "drives": {
+    "defaults": {
+      "curiosity": 0.42,
+      "boredom": 0.2,
+      "restlessness": 0.1,
+      "pride": 0.15,
+      "fatigue": 0.05
+    },
+    "growthPerHour": {
+      "curiosity": 0.16,
+      "boredom": 0.22,
+      "restlessness": 0.1,
+      "pride": 0.05,
+      "fatigue": 0
+    },
+    "satisfyRate": {
+      "curiosity": 0.45,
+      "boredom": 0.5,
+      "restlessness": 0.6,
+      "pride": 0.4,
+      "fatigue": 0
+    },
+    "tensionWeight": {
+      "curiosity": 0.32,
+      "boredom": 0.24,
+      "restlessness": 0.22,
+      "pride": 0.12,
+      "fatigue": -0.3
+    },
+    "tensionFloor": 0.35,
+    "frustrateAmount": 0.12,
+    "fatigueGrowthPerHour": 0.2,
+    "fatigueRestAfterHours": 3,
+    "fatigueRestPerHour": 0.12,
+    "maxHours": 48
+  },
+  "timeouts": {
+    "tickMs": 120000,
+    "busyRetryMs": 60000
+  },
   "intent": {
     "enabled": true,
     "tickSeconds": 1800,
@@ -32,6 +72,9 @@
     "autonomousThreshold": 0.62,
     "execute": false,
     "askWhenQualified": true,
+    "askCooldownHours": 20,
+    "minAskGapHours": 4,
+    "maxRecent": 20,
     "workerPreset": "",
     "worker": {
       "maxSteps": 12,
@@ -49,6 +92,8 @@
     "gapMinutes": 90,
     "biliCli": "",
     "maxItems": 16,
+    "perLane": 5,
+    "cmdTimeoutMs": 20000,
     "lanes": [
       {
         "id": "hot",
@@ -88,7 +133,8 @@
       "enabled": true,
       "limit": 2,
       "order": "views",
-      "size": 8
+      "size": 8,
+      "maxQueryChars": 24
     }
   },
   "target": {

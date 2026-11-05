@@ -28,10 +28,12 @@ export const DEFAULT_GLANCE_THRESHOLD = 0.55;
 export const DEFAULT_GLANCE_GAP_MS = 90 * 60_000;
 /** 单次最多留几条素材；配置里 external.maxItems 可覆盖。 */
 const MAX_ITEMS = 16;
-/** 每路取几条。 */
+/** 每路取几条；配置里 external.perLane 可覆盖。 */
 const PER_LANE = 5;
-/** 命令行超时。 */
+/** 命令行超时；配置里 external.cmdTimeoutMs 可覆盖。 */
 const CMD_TIMEOUT_MS = 20_000;
+/** 念头问题截多长当搜索词；配置里 external.topics.maxQueryChars 可覆盖。 */
+const TOPIC_MAX_CHARS = 24;
 
 /** bili CLI 可能的落点。宿主进程 PATH 往往只有 /usr/bin:/bin。 */
 export function findBiliCli(env = process.env) {
@@ -70,10 +72,10 @@ export function runBili(cli, args, { timeoutMs = CMD_TIMEOUT_MS } = {}) {
 }
 
 /** 热搜 → 素材。只留标题，够我判断值不值得点进去。 */
-export function materialsFromHotSearch(data, now = Date.now()) {
+export function materialsFromHotSearch(data, now = Date.now(), { perLane = PER_LANE } = {}) {
   const items = Array.isArray(data?.items) ? data.items : [];
   return items
-    .slice(0, PER_LANE)
+    .slice(0, perLane)
     .map((item, index) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (title === '') return null;
@@ -89,10 +91,10 @@ export function materialsFromHotSearch(data, now = Date.now()) {
 }
 
 /** 热门视频 → 素材。标题 + 作者 + 播放量，够我判断值不值得点进去。 */
-export function materialsFromPopular(data, now = Date.now()) {
+export function materialsFromPopular(data, now = Date.now(), { perLane = PER_LANE } = {}) {
   const items = Array.isArray(data?.items) ? data.items : [];
   return items
-    .slice(0, PER_LANE)
+    .slice(0, perLane)
     .map((item, index) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (title === '') return null;
@@ -118,10 +120,10 @@ export function materialsFromPopular(data, now = Date.now()) {
  * 搜索接口的字段跟 hot popular 不一样：duration 是 "M:SS" 字符串，
  * 播放量叫 play（不是 stat.view）。照抄 popular 的解析会拿到 undefined。
  */
-export function materialsFromVideoSearch(data, now = Date.now(), { prefix = '视频', source = 'bili-search', idPrefix = 'bili:srch' } = {}) {
+export function materialsFromVideoSearch(data, now = Date.now(), { prefix = '视频', source = 'bili-search', idPrefix = 'bili:srch', perLane = PER_LANE } = {}) {
   const items = Array.isArray(data?.items) ? data.items : [];
   return items
-    .slice(0, PER_LANE)
+    .slice(0, perLane)
     .map((item, index) => {
       const title = typeof item?.title === 'string' ? item.title.trim() : '';
       if (title === '') return null;
@@ -142,25 +144,27 @@ export function materialsFromVideoSearch(data, now = Date.now(), { prefix = '视
 }
 
 /** 虚拟主播切片（保留的老入口，内部已改为通用实现）。 */
-export function materialsFromVtuberClips(data, now = Date.now()) {
+export function materialsFromVtuberClips(data, now = Date.now(), opts = {}) {
   return materialsFromVideoSearch(data, now, {
     prefix: '虚拟主播切片',
     source: 'bili-vtuber',
-    idPrefix: 'bili:vtb'
+    idPrefix: 'bili:vtb',
+    ...opts
   });
 }
 
 /**
  * 把一条 lane 的返回转成素材。format 决定用哪个转换器。
  */
-export function materialsFromLane(lane, data, now = Date.now()) {
+export function materialsFromLane(lane, data, now = Date.now(), { perLane = PER_LANE } = {}) {
   const prefix = typeof lane?.prefix === 'string' && lane.prefix !== '' ? lane.prefix : (lane?.label ?? 'B站');
-  if (lane?.format === 'hot') return materialsFromHotSearch(data, now);
-  if (lane?.format === 'popular') return materialsFromPopular(data, now);
+  if (lane?.format === 'hot') return materialsFromHotSearch(data, now, { perLane });
+  if (lane?.format === 'popular') return materialsFromPopular(data, now, { perLane });
   return materialsFromVideoSearch(data, now, {
     prefix,
     source: `bili-${lane?.id ?? 'search'}`,
-    idPrefix: `bili:${lane?.id ?? 'srch'}`
+    idPrefix: `bili:${lane?.id ?? 'srch'}`,
+    perLane
   });
 }
 
@@ -171,7 +175,7 @@ export function materialsFromLane(lane, data, now = Date.now()) {
  * 别的类型（改代码、做东西）搜了也没用。
  * 词太长搜不出东西，所以截到标点或 24 字。
  */
-export function topicQueries(rows, { limit = 2 } = {}) {
+export function topicQueries(rows, { limit = 2, maxChars = TOPIC_MAX_CHARS } = {}) {
   const seen = new Set();
   const out = [];
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -180,7 +184,7 @@ export function topicQueries(rows, { limit = 2 } = {}) {
     const raw = String(row?.text ?? '').trim();
     if (raw === '') continue;
     const head = raw.split(/[：:，,。.？?！!；;（(]/u)[0].trim();
-    const query = head.slice(0, 24);
+    const query = head.slice(0, maxChars);
     if (query.length < 2) continue;
     if (seen.has(query)) continue;
     seen.add(query);
@@ -224,7 +228,9 @@ export async function glance({
   run = runBili,
   lanes = DEFAULT_LANES,
   topics = { queries: [], order: 'views', size: 8 },
-  maxItems = MAX_ITEMS
+  maxItems = MAX_ITEMS,
+  perLane = PER_LANE,
+  cmdTimeoutMs = CMD_TIMEOUT_MS
 } = {}) {
   const materials = [];
   const sources = [];
@@ -232,9 +238,9 @@ export async function glance({
 
   for (const lane of Array.isArray(lanes) ? lanes : []) {
     if (!Array.isArray(lane?.args) || lane.args.length === 0) continue;
-    const data = await run(cli, lane.args);
+    const data = await run(cli, lane.args, { timeoutMs: cmdTimeoutMs });
     if (data === null) continue;
-    const got = materialsFromLane(lane, data, now);
+    const got = materialsFromLane(lane, data, now, { perLane });
     if (got.length === 0) continue;
     materials.push(...got);
     sources.push(lane.id);
@@ -242,12 +248,13 @@ export async function glance({
 
   const queries = Array.isArray(topics?.queries) ? topics.queries : [];
   for (const query of queries.slice(0, 5)) {
-    const data = await run(cli, topicLaneArgs(query, topics));
+    const data = await run(cli, topicLaneArgs(query, topics), { timeoutMs: cmdTimeoutMs });
     if (data === null) continue;
     const got = materialsFromVideoSearch(data, now, {
       prefix: `搜「${query}」`,
       source: 'bili-topic',
-      idPrefix: `bili:topic:${query}`
+      idPrefix: `bili:topic:${query}`,
+      perLane
     });
     if (got.length === 0) continue;
     materials.push(...got);

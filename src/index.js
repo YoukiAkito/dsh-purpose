@@ -29,10 +29,9 @@ import { readJson, readJsonl, writeJsonAtomic, toIso } from './util.js';
 export const name = 'dsh-purpose';
 export const inject = ['agents', 'tools', 'sessionPersistence'];
 
-/** 单次 tick 最多跑多久，超时就当失败重排（防止某个环节卡死整个循环）。 */
-const TICK_TIMEOUT_MS = 120_000;
-/** 被占用的会话多久后重试。 */
-const BUSY_RETRY_MS = 60_000;
+/** 单次 tick 最多跑多久、被占用后多久重试的兜底值（config.timeouts 可覆盖）。 */
+const DEFAULT_TICK_TIMEOUT_MS = 120_000;
+const DEFAULT_BUSY_RETRY_MS = 60_000;
 
 export async function apply(ctx) {
   const log = (level, message) => {
@@ -62,7 +61,12 @@ export async function apply(ctx) {
 
   mkdirSync(config.dataDir, { recursive: true });
   const store = new PurposeStore(config.dataDir).load(log);
-  const intent = new IntentRuntime(config.dataDir);
+  const intent = new IntentRuntime(config.dataDir, {
+    tuning: config.drives,
+    maxRecent: config.intent.maxRecent,
+    askCooldownHours: config.intent.askCooldownHours,
+    minAskGapHours: config.intent.minAskGapHours
+  });
   intent.load(log);
   /** 下一次念头评估的时刻（毫秒）；null = 未安排。 */
   let intentNextAt = null;
@@ -70,6 +74,10 @@ export async function apply(ctx) {
   /** 外部素材：出去的记录落在 glance.jsonl，用它算上次出门是多久前。 */
   const glancePath = join(config.dataDir, 'glance.jsonl');
   const biliCli = findBiliCli({ DSH_PURPOSE_BILI: config.external.biliCli });
+
+  /** 循环节奏：卡多久算超时、被占用后多久重试。 */
+  const tickTimeoutMs = Number.isFinite(config.timeouts?.tickMs) ? config.timeouts.tickMs : DEFAULT_TICK_TIMEOUT_MS;
+  const busyRetryMs = Number.isFinite(config.timeouts?.busyRetryMs) ? config.timeouts.busyRetryMs : DEFAULT_BUSY_RETRY_MS;
 
   // 目标会话：config.json 里的 target.sessionId 优先，否则用当前 root agent。
   const targetSessionId = typeof config.target?.sessionId === 'string' ? config.target.sessionId : '';
@@ -295,14 +303,19 @@ export async function apply(ctx) {
           if (verdict.glance) {
             // 看什么：配置里的 lanes + 我自己想弄明白的问题（从念头账本里取）。
             const queries = config.external.topics.enabled
-              ? topicQueries(intent.ledger.open(Date.now()), { limit: config.external.topics.limit })
+              ? topicQueries(intent.ledger.open(Date.now()), {
+                limit: config.external.topics.limit,
+                maxChars: config.external.topics.maxQueryChars
+              })
               : [];
             const seen = await glance({
               cli: biliCli,
               log,
               lanes: config.external.lanes,
               topics: { queries, order: config.external.topics.order, size: config.external.topics.size },
-              maxItems: config.external.maxItems
+              maxItems: config.external.maxItems,
+              perLane: config.external.perLane,
+              cmdTimeoutMs: config.external.cmdTimeoutMs
             });
             external = seen.materials;
             recordGlance(glancePath, { materials: seen.materials, sources: seen.sources, at: Date.now() });
@@ -327,7 +340,7 @@ export async function apply(ctx) {
         sessionLogPath: sessionLogPathOf(ctx, targetSessionId, join(config.dataDir, 'logcache'), log),
         thoughtsPath: join(config.dataDir, 'thoughts.jsonl'),
         external
-      }), TICK_TIMEOUT_MS);
+      }), tickTimeoutMs);
       if (result?.nextAt !== undefined) store.state.nextAt = result.nextAt;
       const nextAtMs = Date.parse(store.state.nextAt);
       const delay = Number.isFinite(nextAtMs) ? nextAtMs - Date.now() : nextGapMs(config);
@@ -335,7 +348,7 @@ export async function apply(ctx) {
       schedule(delay);
     } catch (error) {
       log('warn', `tick 失败：${error instanceof Error ? error.message : String(error)}`);
-      schedule(BUSY_RETRY_MS);
+      schedule(busyRetryMs);
     } finally {
       running = false;
       store.persist();
@@ -645,6 +658,9 @@ function serializable(config) {
     confidence: config.confidence,
     maxMaterials: config.maxMaterials,
     maxMaterialChars: config.maxMaterialChars,
+    // 驱动调参与循环节奏同理：漏掉就会被一次 patchConfig 抹回默认。
+    drives: config.drives,
+    timeouts: config.timeouts,
     intent: config.intent,
     // 外部素材源也要落盘：patchConfig 会整份重写 config.json，
     // 漏掉这一段等于「改一次设置就把 lanes 抹回默认」。

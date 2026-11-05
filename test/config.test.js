@@ -44,3 +44,44 @@ test('topics 的开关与条数能配', () => {
   assert.equal(c.external.topics.limit, 5);
   assert.equal(c.external.topics.size, 20);
 });
+
+test('驱动调参能配，写了一半就只覆盖那一半', () => {
+  const c = resolveConfig({ ...base, file: { drives: { growthPerHour: { curiosity: 0.5 } } } });
+  assert.equal(c.drives.growthPerHour.curiosity, 0.5);
+  // 没写的那几项保持默认。
+  assert.equal(c.drives.growthPerHour.boredom, 0.22);
+  assert.equal(c.drives.tensionFloor, 0.35);
+});
+
+test('驱动调参里的未知键被丢掉，不会凭空多出一个驱动', () => {
+  const c = resolveConfig({ ...base, file: { drives: { growthPerHour: { curiositty: 0.9 } } } });
+  assert.equal(Object.keys(c.drives.growthPerHour).includes('curiositty'), false);
+  assert.equal(c.drives.growthPerHour.curiosity, 0.16);
+});
+
+test('疲劳的负权重允许写成负数', () => {
+  const c = resolveConfig({ ...base, file: { drives: { tensionWeight: { fatigue: -0.8 } } } });
+  assert.equal(c.drives.tensionWeight.fatigue, -0.8);
+});
+
+test('循环节奏与追问冷却能配，越界夹回', () => {
+  const c = resolveConfig({
+    ...base,
+    file: { timeouts: { tickMs: 1, busyRetryMs: 9e9 }, intent: { askCooldownHours: 999, minAskGapHours: -3, maxRecent: 500 } }
+  });
+  assert.equal(c.timeouts.tickMs, 5_000);
+  assert.equal(c.timeouts.busyRetryMs, 3_600_000);
+  assert.equal(c.intent.askCooldownHours, 720);
+  assert.equal(c.intent.minAskGapHours, 0);
+  assert.equal(c.intent.maxRecent, 500);
+});
+
+test('出门的每路条数、命令超时、问题长度能配', () => {
+  const c = resolveConfig({
+    ...base,
+    file: { external: { perLane: 9, cmdTimeoutMs: 3000, topics: { maxQueryChars: 12 } } }
+  });
+  assert.equal(c.external.perLane, 9);
+  assert.equal(c.external.cmdTimeoutMs, 3000);
+  assert.equal(c.external.topics.maxQueryChars, 12);
+});

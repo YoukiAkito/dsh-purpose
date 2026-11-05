@@ -50,6 +50,25 @@ mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 - `quietHours.timeZone` 留空 = 用本机时区偏移
 - `scoreThreshold` 是最关键的一个旋钮：调高会变得更安静，调低会变得更啰嗦
 
+### 哪些能配，哪些故意不配
+
+判断标准只有一条：**这是「我是什么脾气」还是「我是谁」**。
+
+能配的是脾气——它本来就不该由写代码的人替使用者定死：
+
+| 配置段 | 管什么 |
+|---|---|
+| `drives` | 五个驱动的初值、每小时涨多少、被满足时落多少、进 tension 的权重、底噪，以及疲劳的涨落速度 |
+| `intent.askCooldownHours` / `minAskGapHours` / `maxRecent` | 同一条念头多久内不重复问、两次追问至少隔多久、最近做过几条不再急着做 |
+| `external.perLane` / `cmdTimeoutMs` / `topics.maxQueryChars` | 每路素材取几条、单条 bili 命令等多久、把念头原文截多长当搜索词 |
+| `timeouts.tickMs` / `busyRetryMs` | 单次循环卡多久算超时、会话被占用后多久重试 |
+
+故意不配的是身份：`src/score.js` 的 `WEIGHTS`（怎么权衡价值/紧迫/风险）、`EMOTION_HINTS` / `NEED_HINTS` 那两张中文词表、三处 `build*Prompt` 的提示词正文。这几样换了就不是这个 agent 了，改它们请直接改代码。
+
+也不该配的是实现细节：zstd 的候选路径、会话日志留多少行、缓存多大——写死在 `src/sessionlog.js` 里。
+
+**加新配置段时记得同步改 `serializable()`**（`src/index.js` 末尾）。`purpose_settings` 会拿它整份重写 `config.json`，漏一个字段就等于「改一次设置把那段抹回默认」——`external` 之前就栽过。
+
 环境变量优先于文件：`DSH_PURPOSE_ENABLED`、`DSH_PURPOSE_MIN_GAP`、`DSH_PURPOSE_MAX_GAP`、`DSH_PURPOSE_QUIET_START`、`DSH_PURPOSE_QUIET_END`、`DSH_PURPOSE_TARGET`、`DSH_PURPOSE_DATA_DIR`。
 
 ## 数据文件
@@ -175,7 +194,7 @@ mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 node --test test/
 ```
 
-143 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制、风险说明的措辞、出门看一眼的触发条件、可配置 lane 与「自己的问题当搜索词」。
+151 个用例，覆盖打分、去重、冷却、日/小时配额、安静时段、配置兜底、投递失败回退，以及驱动演进、念头账本合并与衰减、候选打分与风险降级、worker 的闸门与失败不抛、追问的冷却与频率限制、风险说明的措辞、出门看一眼的触发条件、可配置 lane 与「自己的问题当搜索词」、驱动调参与追问冷却的可覆盖性。
 
 ## 许可
 
