@@ -10,6 +10,7 @@ import {
   lastGlanceAt,
   materialsFromHotSearch,
   materialsFromPopular,
+  materialsFromVtuberClips,
   recordGlance,
   shouldGlance
 } from '../src/glance.js';
@@ -67,26 +68,42 @@ test('热门视频带作者与播放量', () => {
   assert.equal(items[0].source, 'bili-popular');
 });
 
+test('虚拟主播切片：UP 与本播放量，播放少的就不写播放量', () => {
+  const data = {
+    items: [
+      { bvid: 'BV1', title: '主播笑了', author: { name: '某某'} , play: 123456 },
+      { bvid: 'BV2', title: '刚开播', author: { name: '另一个' }, play: 3 },
+      { bvid: 'BV3', title: '   ', play: 9 }
+    ]
+  };
+  const items = materialsFromVtuberClips(data, 1);
+  assert.equal(items.length, 2);
+  assert.equal(items[0].text, '虚拟主播切片：主播笑了，UP 某某，12 万播放');
+  assert.equal(items[0].source, 'bili-vtuber');
+  assert.equal(items[1].text, '虚拟主播切片：刚开播，UP 另一个');
+});
+
 test('没有 cli 就不走路，也不抛', async () => {
   const seen = await glance({ cli: '' });
   assert.deepEqual(seen, { materials: [], sources: [] });
 });
 
-test('跑两条命令并把素材合起来', async () => {
+test('跑三条命令并把素材合起来', async () => {
   const calls = [];
   const run = async (cli, args) => {
     calls.push(args.join(' '));
     if (args[0] === 'hot' && args[1] === 'search') return { items: [{ title: '热搜一' }] };
     if (args[0] === 'hot' && args[1] === 'popular') return { items: [{ bvid: 'BV1', title: '热门一' }] };
+    if (args[0] === 'search' && args[1] === 'video') return { items: [{ bvid: 'BV9', title: '切片一' }] };
     return null;
   };
   const seen = await glance({ cli: '/fake/bili', run, now: 7 });
-  assert.equal(seen.materials.length, 2);
-  assert.deepEqual(seen.sources, ['hot', 'popular']);
-  assert.deepEqual(calls, ['hot search', 'hot popular']);
+  assert.equal(seen.materials.length, 3);
+  assert.deepEqual(seen.sources, ['hot', 'popular', 'vtuber']);
+  assert.deepEqual(calls, ['hot search', 'hot popular', 'search video 虚拟主播 切片 --order views --size 10']);
 });
 
-test('两条都失败时记一条警告', async () => {
+test('三条都失败时记一条警告', async () => {
   const warns = [];
   const seen = await glance({ cli: '/fake/bili', run: async () => null, log: (lvl, msg) => warns.push([lvl, msg]) });
   assert.equal(seen.materials.length, 0);

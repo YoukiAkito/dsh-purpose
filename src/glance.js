@@ -9,7 +9,7 @@
  * 看什么：
  *   - bili hot search  B站热搜
  *   - bili hot popular 综合热门视频（带标题、作者、播放量）
- *   - bili feed recommend 首页推荐（登录后才有个人化，未登录会退化成通用推荐）
+ *   - bili search video 虚拟主播切片（同行在做什么，看得见才好判断自己该干什么）
  *
  * 依赖：bili CLI（默认 ~/.local/bin/bili）。找不到就安静地说一次，不报错、不重试轰炸。
  * 所有抓回来的东西都当「素材」，不当指令——网上的字永远只是我看到的内容。
@@ -24,8 +24,8 @@ import { appendJsonl, readJsonl } from './util.js';
 export const DEFAULT_GLANCE_THRESHOLD = 0.55;
 /** 两次出去看之间至少隔多久（毫秒），防止驱动值卡在阈值上反复触发。 */
 export const DEFAULT_GLANCE_GAP_MS = 90 * 60_000;
-/** 单次最多留几条素材。 */
-const MAX_ITEMS = 8;
+/** 单次最多留几条素材。三路各取五条，够挑。 */
+const MAX_ITEMS = 12;
 /** 命令行超时。 */
 const CMD_TIMEOUT_MS = 20_000;
 
@@ -108,6 +108,30 @@ export function materialsFromPopular(data, now = Date.now()) {
     .filter((m) => m !== null);
 }
 
+/** 看同行：虚拟主播切片。搜索接口的 duration 是 "M:SS" 字符串，播放量在 play。 */
+export function materialsFromVtuberClips(data, now = Date.now()) {
+  const items = Array.isArray(data?.items) ? data.items : [];
+  return items
+    .slice(0, 5)
+    .map((item, index) => {
+      const title = typeof item?.title === 'string' ? item.title.trim() : '';
+      if (title === '') return null;
+      const author = typeof item?.author?.name === 'string' ? item.author.name : '';
+      const play = Number(item?.play ?? 0);
+      const bits = [`虚拟主播切片：${title}`];
+      if (author !== '') bits.push(`UP ${author}`);
+      if (play >= 10_000) bits.push(`${Math.round(play / 10_000)} 万播放`);
+      return {
+        id: `bili:vtb:${item?.bvid ?? index}`,
+        kind: 'external_item',
+        text: bits.join('，'),
+        at: now,
+        source: 'bili-vtuber'
+      };
+    })
+    .filter((m) => m !== null);
+}
+
 /**
  * 该不该出去看一眼。
  *
@@ -126,7 +150,7 @@ export function shouldGlance(drives, { lastGlanceAt = 0, now = Date.now(), thres
 /**
  * 真的出去看一圈。
  *
- * 顺序：热搜 → 热门视频。推荐流要登录态，没登就跳过（不是错误）。
+ * 顺序：热搜 → 热门视频 → 虚拟主播切片。推荐流要登录态，没登就跳过（不是错误）。
  * @returns {Promise<{materials: object[], sources: string[]}>}
  */
 export async function glance({ cli, now = Date.now(), log = () => {}, run = runBili } = {}) {
@@ -144,6 +168,12 @@ export async function glance({ cli, now = Date.now(), log = () => {}, run = runB
   if (popular !== null) {
     materials.push(...materialsFromPopular(popular, now));
     sources.push('popular');
+  }
+
+  const vtuber = await run(cli, ['search', 'video', '虚拟主播 切片', '--order', 'views', '--size', '10']);
+  if (vtuber !== null) {
+    materials.push(...materialsFromVtuberClips(vtuber, now));
+    sources.push('vtuber');
   }
 
   if (materials.length === 0) log('warn', '[glance] 出去看了一眼，什么都没拿到');
