@@ -172,7 +172,7 @@ test('tick 在日预算用尽时直接沉默', async () => {
   store.state.deliveredToday = 1;
   const result = await tick({
     store,
-    config: { ...DEFAULT_CONFIG, maxDeliveriesPerDay: 1, quietHours: { start: '00:00', end: '00:00', timeZone: '' } },
+    config: { ...DEFAULT_CONFIG, maxDeliveriesPerDay: 1, quietHours: { start: '00:00', end: '00:00' } },
     deliver: async () => 'sent',
     now: () => now,
     log: () => {}
@@ -186,7 +186,7 @@ test('tick 在安静时段沉默', async () => {
   const { dir, store } = tempStore();
   const result = await tick({
     store,
-    config: { ...DEFAULT_CONFIG, quietHours: { start: '00:00', end: '23:59', timeZone: '' } },
+    config: { ...DEFAULT_CONFIG, quietHours: { start: '00:00', end: '23:59' } },
     deliver: async () => 'sent',
     now: () => Date.now(),
     log: () => {}
@@ -200,7 +200,7 @@ test('tick 没素材时沉默', async () => {
   const { dir, store } = tempStore();
   const result = await tick({
     store,
-    config: { ...DEFAULT_CONFIG, quietHours: { start: '00:00', end: '00:00', timeZone: '' } },
+    config: { ...DEFAULT_CONFIG, quietHours: { start: '00:00', end: '00:00' } },
     collector: () => [],
     deliver: async () => 'sent',
     log: () => {}
@@ -218,7 +218,7 @@ test('tick 打分够就投递并记账', async () => {
     config: {
       ...DEFAULT_CONFIG,
       scoreThreshold: 0.1,
-      quietHours: { start: '00:00', end: '00:00', timeZone: '' },
+      quietHours: { start: '00:00', end: '00:00' },
       minGapSeconds: 60,
       maxGapSeconds: 120
     },
@@ -247,7 +247,7 @@ test('tick 投递失败时不记配额，间隔缩短重试', async () => {
     config: {
       ...DEFAULT_CONFIG,
       scoreThreshold: 0.1,
-      quietHours: { start: '00:00', end: '00:00', timeZone: '' },
+      quietHours: { start: '00:00', end: '00:00' },
       minGapSeconds: 600,
       maxGapSeconds: 900
     },

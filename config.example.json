@@ -4,8 +4,7 @@
   "maxGapSeconds": 9000,
   "quietHours": {
     "start": "07:00",
-    "end": "17:00",
-    "timeZone": ""
+    "end": "17:00"
   },
   "maxDeliveriesPerDay": 12,
   "maxWakeupsPerHour": 6,

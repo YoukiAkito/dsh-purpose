@@ -31,8 +31,8 @@ export const DEFAULT_CONFIG = {
   minGapSeconds: 2400,
   /** 强制投递上限（秒）：再懒也不能拖过这个间隔。 */
   maxGapSeconds: 9000,
-  /** 安静时段（本地时区），窗内不投递。 */
-  quietHours: { start: '07:00', end: '17:00', timeZone: '' },
+  /** 安静时段（一律按本机时区算），窗内不投递。 */
+  quietHours: { start: '07:00', end: '17:00' },
   /** 每日最多投递几条（含被拒绝的尝试）。 */
   maxDeliveriesPerDay: 12,
   /** 每小时最多唤醒几次，防抖。 */
@@ -328,13 +328,7 @@ export function resolveConfig({ platform = process.platform, env = process.env, 
     dataDir,
     minGapSeconds: intOf(file.minGapSeconds ?? env.DSH_PURPOSE_MIN_GAP, DEFAULT_CONFIG.minGapSeconds, 60, 86400),
     maxGapSeconds: intOf(file.maxGapSeconds ?? env.DSH_PURPOSE_MAX_GAP, DEFAULT_CONFIG.maxGapSeconds, 300, 172800),
-    quietHours: {
-      start,
-      end,
-      timeZone: typeof quiet.timeZone === 'string' && quiet.timeZone !== ''
-        ? quiet.timeZone
-        : env.DSH_PURPOSE_TIME_ZONE ?? ''
-    },
+    quietHours: { start, end },
     maxDeliveriesPerDay: intOf(file.maxDeliveriesPerDay, DEFAULT_CONFIG.maxDeliveriesPerDay, 0, 50),
     maxWakeupsPerHour: intOf(file.maxWakeupsPerHour, DEFAULT_CONFIG.maxWakeupsPerHour, 1, 60),
     scoreThreshold: floatOf(file.scoreThreshold, DEFAULT_CONFIG.scoreThreshold, 0, 1),

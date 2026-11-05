@@ -47,7 +47,6 @@ mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 模板里每一项都带着默认值，改你要改的那几行就行（至少填 `target.sessionId`）。
 
 - `target.sessionId` **必须填**，否则它哪也不发（宁可不动，也不要瞎猜一个会话塞进去）
-- `quietHours.timeZone` 留空 = 用本机时区偏移
 - `scoreThreshold` 是最关键的一个旋钮：调高会变得更安静，调低会变得更啰嗦
 
 ### 每一项都是干嘛的

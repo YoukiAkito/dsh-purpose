@@ -289,10 +289,7 @@ export async function apply(ctx) {
       if (config.external.enabled && biliCli !== '') {
         try {
           intent.advanceDrives(Date.now());
-          const zone = Number.isFinite(config.quietHours.timeZone) && config.quietHours.timeZone !== ''
-            ? config.quietHours.timeZone
-            : localZoneOffsetMinutes(Date.now());
-          const verdict = isInQuietHours(Date.now(), config, zone)
+          const verdict = isInQuietHours(Date.now(), config, localZoneOffsetMinutes(Date.now()))
             ? { glance: false, reason: 'quiet_hours' }
             : shouldGlance(intent.state.drives, {
               lastGlanceAt: lastGlanceAt(glancePath),

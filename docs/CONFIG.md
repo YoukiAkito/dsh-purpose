@@ -37,7 +37,8 @@ mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `start` / `end` | `07:00` / `17:00` | 24 小时制 `HH:MM`；支持跨零点（如 `23:00`–`08:00`） |
-| `timeZone` | `""` | 留空即可。当前实现只认本机时区偏移，填了别的值会被忽略（`Number.isFinite` 判定，字符串永远不通过） |
+
+时段一律按**本机时区**算，没有时区参数——放别处跑就改本机时区，别在配置里指定。
 
 **窗内不投递，也不出门看一眼**（出门抓回来的素材会被安静闸门丢掉，白跑一趟还白降好奇心）。所以这个窗应该设成「对方在睡觉、我该闭嘴」的那一段，不是「我不活跃」的那一段。
 
@@ -191,7 +192,6 @@ mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 - `DSH_PURPOSE_DATA_DIR` — 数据目录
 - `DSH_PURPOSE_MIN_GAP` / `DSH_PURPOSE_MAX_GAP` — 投递间隔（秒）
 - `DSH_PURPOSE_QUIET_START` / `DSH_PURPOSE_QUIET_END` — 安静时段
-- `DSH_PURPOSE_TIME_ZONE` — 时区偏移
 - `DSH_PURPOSE_TARGET` — 目标会话 id
 - `DSH_PURPOSE_INTENT_TICK` — 念头评估间隔（秒）
 - `DSH_PURPOSE_BILI` — bili CLI 路径

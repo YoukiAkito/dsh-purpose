@@ -73,11 +73,8 @@ export async function tick(deps) {
     return finish({ decision: 'silent', reason: 'hourly_budget', nextAt: new Date(at + nextGapMs(config, random)).toISOString() });
   }
 
-  // 闸门三：安静时段
-  const zone = Number.isFinite(config.quietHours.timeZone) && config.quietHours.timeZone !== ''
-    ? config.quietHours.timeZone
-    : localZoneOffsetMinutes(at);
-  if (isInQuietHours(at, config, zone)) {
+  // 闸门三：安静时段（按本机时区）
+  if (isInQuietHours(at, config, localZoneOffsetMinutes(at))) {
     return finish({ decision: 'silent', reason: 'quiet_hours', nextAt: new Date(at + nextGapMs(config, random)).toISOString() });
   }
 
