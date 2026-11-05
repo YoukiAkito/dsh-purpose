@@ -361,7 +361,9 @@ export async function apply(ctx) {
   };
 
   // 注册工具：每个 root agent 一次（含之后才出现的）。
-  const registered = new WeakSet();
+  // 用 id 去重而不是对象引用：agent/created 给的 agent 和 roots() 里的，
+  // 可能是同一个会话的两个包装对象，WeakSet 按引用判会漏。
+  const registered = new Set();
   const service = {
     state: stateView,
     goals: (limit) => store.recentGoals(limit),
@@ -399,9 +401,11 @@ export async function apply(ctx) {
     }
   };
   const registerOne = (agent) => {
-    if (registered.has(agent)) return;
-    if (!ctx.agents.roots().includes(agent)) return;
-    registered.add(agent);
+    const id = agent?.id;
+    if (typeof id !== 'string' || id === '') return;
+    if (registered.has(id)) return;
+    if (!ctx.agents.roots().some((each) => each?.id === id)) return;
+    registered.add(id);
     try {
       registerPurposeTools(agent.ctx, agent, service);
     } catch (error) {
