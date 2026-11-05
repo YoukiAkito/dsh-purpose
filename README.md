@@ -50,6 +50,10 @@ mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 - `quietHours.timeZone` 留空 = 用本机时区偏移
 - `scoreThreshold` 是最关键的一个旋钮：调高会变得更安静，调低会变得更啰嗦
 
+### 每一项都是干嘛的
+
+完整字段表（默认值、范围、调了会怎样）在 [`docs/CONFIG.md`](docs/CONFIG.md)。这里只讲怎么想。
+
 ### 哪些能配，哪些故意不配
 
 判断标准只有一条：**这是「我是什么脾气」还是「我是谁」**。
