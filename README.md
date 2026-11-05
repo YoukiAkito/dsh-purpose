@@ -38,18 +38,13 @@ cd ~/.dsh/profiles/desktop
 
 `<dataDir>/config.json`，缺省 `dataDir = $DSH_HOME/purpose`（没设 `DSH_HOME` 时是 `~/.dsh/purpose`）。
 
-```json
-{
-  "enabled": true,
-  "minGapSeconds": 2400,
-  "maxGapSeconds": 9000,
-  "quietHours": { "start": "07:00", "end": "17:00", "timeZone": "" },
-  "maxDeliveriesPerDay": 12,
-  "maxWakeupsPerHour": 6,
-  "scoreThreshold": 0.42,
-  "target": { "sessionId": "" }
-}
+**仓库里只有模板 `config.example.json`，没有真实配置。** 真实配置里有会话 id、时区、安静时段这些私人的东西，不该进 git——`.gitignore` 已经把 `config.json` 挡在外面。要开张就复制一份：
+
+```bash
+mkdir -p ~/.dsh/purpose && cp config.example.json ~/.dsh/purpose/config.json
 ```
+
+模板里每一项都带着默认值，改你要改的那几行就行（至少填 `target.sessionId`）。
 
 - `target.sessionId` **必须填**，否则它哪也不发（宁可不动，也不要瞎猜一个会话塞进去）
 - `quietHours.timeZone` 留空 = 用本机时区偏移

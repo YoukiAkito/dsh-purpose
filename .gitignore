@@ -1,4 +1,8 @@
 node_modules/
 *.log
 .DS_Store
+
+# 真实配置不进仓库——里面是会话 id、时区、个人偏好。
+# 要改配置就复制 config.example.json 到 <dataDir>/config.json。
 /purpose/
+config.json

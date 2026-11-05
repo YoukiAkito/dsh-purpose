@@ -1,0 +1,97 @@
+{
+  "enabled": true,
+  "minGapSeconds": 2400,
+  "maxGapSeconds": 9000,
+  "quietHours": {
+    "start": "07:00",
+    "end": "17:00",
+    "timeZone": ""
+  },
+  "maxDeliveriesPerDay": 12,
+  "maxWakeupsPerHour": 6,
+  "scoreThreshold": 0.42,
+  "dedupeSimilarity": 0.72,
+  "maxAttemptsPerGoal": 3,
+  "goalCooldownSeconds": 21600,
+  "materialWindowHours": 24,
+  "firstDelaySeconds": 600,
+  "confidence": {
+    "reward": 0.18,
+    "penalty": 0.28,
+    "silenceDecay": 0.06,
+    "min": 0.05,
+    "max": 0.95
+  },
+  "maxMaterials": 24,
+  "maxMaterialChars": 220,
+  "intent": {
+    "enabled": true,
+    "tickSeconds": 1800,
+    "minTension": 0.3,
+    "threshold": 0.45,
+    "autonomousThreshold": 0.62,
+    "execute": false,
+    "askWhenQualified": true,
+    "workerPreset": "",
+    "worker": {
+      "maxSteps": 12,
+      "timeBoxMs": 600000,
+      "allowedRiskClasses": [
+        "read",
+        "research",
+        "write_workspace"
+      ]
+    }
+  },
+  "external": {
+    "enabled": true,
+    "threshold": 0.55,
+    "gapMinutes": 90,
+    "biliCli": "",
+    "maxItems": 16,
+    "lanes": [
+      {
+        "id": "hot",
+        "label": "B站热搜",
+        "args": [
+          "hot",
+          "search"
+        ],
+        "format": "hot"
+      },
+      {
+        "id": "popular",
+        "label": "B站热门视频",
+        "args": [
+          "hot",
+          "popular"
+        ],
+        "format": "popular"
+      },
+      {
+        "id": "vtuber",
+        "label": "虚拟主播切片",
+        "args": [
+          "search",
+          "video",
+          "虚拟主播 切片",
+          "--order",
+          "views",
+          "--size",
+          "10"
+        ],
+        "format": "video",
+        "prefix": "虚拟主播切片"
+      }
+    ],
+    "topics": {
+      "enabled": true,
+      "limit": 2,
+      "order": "views",
+      "size": 8
+    }
+  },
+  "target": {
+    "sessionId": ""
+  }
+}
