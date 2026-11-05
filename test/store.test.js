@@ -9,7 +9,7 @@ import { DEFAULT_CONFIG, isInQuietHours, localZoneOffsetMinutes, parseClock, res
 import { tick } from '../src/engine.js';
 
 function tempStore() {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-purpose-'));
+  const dir = mkdtempSync(join(tmpdir(), 'muri-purpose-'));
   return { dir, store: new PurposeStore(dir).load() };
 }
 

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { readSessionLog, materialsFromLog } from '../src/collect.js';
 
 function tmpFile(lines) {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-purpose-'));
+  const dir = mkdtempSync(join(tmpdir(), 'muri-purpose-'));
   const file = join(dir, 'session.jsonl');
   writeFileSync(file, lines.map((line) => JSON.stringify(line)).join('\n'));
   return file;

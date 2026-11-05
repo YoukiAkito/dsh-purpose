@@ -251,9 +251,9 @@ export function resolveLanes(list) {
 export function assertPlatform(platform = process.platform) {
   if (platform === 'darwin' || platform === 'linux') return;
   if (platform === 'win32') {
-    throw new Error('dsh-purpose 暂不支持 Windows（路径与进程管理按 POSIX 写）；macOS 与 Linux 可用。');
+    throw new Error('muri-purpose 暂不支持 Windows（路径与进程管理按 POSIX 写）；macOS 与 Linux 可用。');
   }
-  throw new Error(`dsh-purpose 不支持此平台：${platform}`);
+  throw new Error(`muri-purpose 不支持此平台：${platform}`);
 }
 
 /**

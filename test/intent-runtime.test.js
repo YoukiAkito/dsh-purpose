@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { EMPTY_INTENT_STATE, IntentRuntime, ASK_COOLDOWN_HOURS, MIN_ASK_GAP_HOURS } from '../src/intent-runtime.js';
 
 function withDir(fn) {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-purpose-rt-'));
+  const dir = mkdtempSync(join(tmpdir(), 'muri-purpose-rt-'));
   try {
     return fn(dir);
   } finally {

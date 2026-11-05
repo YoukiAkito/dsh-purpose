@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { IntentionLedger, intentionSimilarity, INTENTION_KINDS } from '../src/intentions.js';
 
 function withDir(fn) {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-purpose-intent-'));
+  const dir = mkdtempSync(join(tmpdir(), 'muri-purpose-intent-'));
   try {
     return fn(dir);
   } finally {

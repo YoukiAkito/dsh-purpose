@@ -1,9 +1,9 @@
 /**
- * dsh-purpose —— 目的机制插件。
+ * muri-purpose —— 目的机制插件。
  *
  * 跟 dsh-proactive 的区别：
  *   dsh-proactive  按你设定的闹钟醒来，醒来后自己看要不要说话
- *   dsh-purpose    自己攒素材、自己提目标假设、自己打分，够了才叫醒自己
+ *   muri-purpose    自己攒素材、自己提目标假设、自己打分，够了才叫醒自己
  *
  * 一次 tick 的流程见 engine.js。这里的职责只有四件：
  *   1. 读配置、建 store、起定时器
@@ -15,6 +15,7 @@
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { resolveConfig, isInQuietHours, localZoneOffsetMinutes, parseClock, resolveLane } from './config.js';
 import { PurposeStore } from './store.js';
 import { tick as runTick, nextGapMs } from './engine.js';
@@ -26,7 +27,7 @@ import { findBiliCli, glance, shouldGlance, recordGlance, lastGlanceAt, topicQue
 import { materializeSessionLog, resolveSessionLog } from './sessionlog.js';
 import { readJson, readJsonl, writeJsonAtomic, toIso } from './util.js';
 
-export const name = 'dsh-purpose';
+export const name = 'muri-purpose';
 export const inject = ['agents', 'tools', 'sessionPersistence'];
 
 /** 单次 tick 最多跑多久、被占用后多久重试的兜底值（config.timeouts 可覆盖）。 */
@@ -36,7 +37,7 @@ const DEFAULT_BUSY_RETRY_MS = 60_000;
 export async function apply(ctx) {
   const log = (level, message) => {
     const fn = ctx.logger?.[level];
-    if (typeof fn === 'function') fn.call(ctx.logger, `[dsh-purpose] ${message}`);
+    if (typeof fn === 'function') fn.call(ctx.logger, `[muri-purpose] ${message}`);
   };
 
   let config;
@@ -227,7 +228,14 @@ export async function apply(ctx) {
       return 'failed';
     }
 
-    const message = { role: 'user', content: [{ type: 'text', text: prompt }] };
+    // v4 会话格式要求每条落盘消息都带 producer-owned 的 source.kind。
+    // 少了它 session 日志会被写死（agent/inbox/spliced 里留一条非法消息，
+    // 之后投影抛 SessionFormatError，整个会话再也 resume 不回来）。
+    const message = {
+      role: 'user',
+      content: [{ type: 'text', text: prompt }],
+      source: { kind: 'plugin:muri-purpose' }
+    };
     let claimed = false;
     try {
       claimed = await agent.runMaintenance(() => {
@@ -443,25 +451,31 @@ export async function apply(ctx) {
 
     const presets = ctx.get('agentPresets', false);
     const handle = await ctx.agents.create({
+      // sessionId 必须给：不给的话会话 id 是自动编号的 "session-1"，而 create 内部
+      // 要校验 agent.id === session.id，直接抛 agent id "undefined" does not match。
+      sessionId: `muri-purpose-worker-${randomUUID()}`,
       agentOptions: {
         provider: selection.provider,
         model: selection.model,
         ...(typeof selection.reasoningEffort === 'string' ? { reasoningEffort: selection.reasoningEffort } : {})
       },
+      // meta 只能放白名单字段（version/id/createdAt/isSeeded/delegationDepth/cwd/
+      // parentSession/origin/agentPreset），且 origin 只接受 "subagent"。
+      // 不传 cwd 的话 worker 没有工作目录，写文件会到处乱落。
+      meta: { cwd: process.cwd() },
       setup: async (agentCtx) => {
         // 跟主会话一样：不 mount preset 就只有 host-plane 工具，read/write 全报 unknown。
         if (presets === undefined || typeof presets.mount !== 'function') return;
         if (typeof config.intent.workerPreset === 'string' && config.intent.workerPreset !== '') {
           await presets.mount(agentCtx, config.intent.workerPreset);
         }
-      },
-      meta: { origin: 'dsh-purpose', maxSteps }
+      }
     });
 
     try {
       handle.agent.followup({
         content: [{ type: 'text', text: prompt }],
-        source: { kind: 'plugin:dsh-purpose' }
+        source: { kind: 'plugin:muri-purpose' }
       });
       const timer = setTimeout(() => {
         try {
