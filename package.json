@@ -1,7 +1,7 @@
 {
   "name": "muri-purpose",
   "version": "0.1.0",
-  "description": "Purpose-driven proactive outreach for DeepSeek Harness: collect materials, form goal hypotheses, score them, deliver at most one, and learn from the reply. dsh-purpose：给 DSH agent 装上『目的机制』——收集素材、提出目标假设、打分选一条、投递后按反馈调整权重。零依赖，macOS 优先，Linux 可用，Windows 暂未实现。",
+  "description": "Purpose-driven proactive outreach for DeepSeek Harness: collect materials, form goal hypotheses, score them, deliver at most one, and learn from the reply. muri-purpose：给 DSH agent 装上『目的机制』——收集素材、提出目标假设、打分选一条、投递后按反馈调整权重。零依赖，macOS 优先，Linux 可用，Windows 暂未实现。",
   "type": "module",
   "main": "src/index.js",
   "exports": {

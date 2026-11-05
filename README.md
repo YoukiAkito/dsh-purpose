@@ -1,4 +1,4 @@
-# dsh-purpose
+# muri-purpose
 
 给 DSH agent 装一个「目的机制」：不是等着被叫，而是自己攒素材、自己提目标、自己打分，够了才开口。
 
@@ -10,7 +10,7 @@
 
 ## 跟 dsh-proactive 的区别
 
-| | dsh-proactive | dsh-purpose |
+| | dsh-proactive | muri-purpose |
 |---|---|---|
 | 什么时候醒 | 你设的闹钟（cron / 间隔） | 自己算的间隔（40~150 分钟随机） |
 | 醒来说什么 | 一句固定提示，让它自己看 | 一段带素材和打分的提示，说明"为什么现在找你" |
@@ -24,12 +24,12 @@
 
 ```bash
 cd ~/.dsh/profiles/desktop
-"<dsh 内置 node>" "<dsh 内置 pnpm>" add dsh-purpose
+"<dsh 内置 node>" "<dsh 内置 pnpm>" add muri-purpose
 ```
 
 装完两件事：
 
-1. 往 `package.json` 的 `dsh.profile.bundles` 里加 `"dsh-purpose"`（`pnpm add` 只改 `dependencies`，不改 bundles）
+1. 往 `package.json` 的 `dsh.profile.bundles` 里加 `"muri-purpose"`（`pnpm add` 只改 `dependencies`，不改 bundles）
 2. 整个 DSH 退出重开（插件不是热载的）
 
 **Windows 暂不支持**：本版按 POSIX 写路径与进程管理，`apply()` 在 win32 上会直接抛错退出，不会半死不活地跑。
